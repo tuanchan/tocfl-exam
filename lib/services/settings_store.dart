@@ -6,7 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 class SettingsStore extends ChangeNotifier {
   static const defaultGeminiModel = 'gemini-3.1-flash-lite';
   static const publicDevelopmentUrl =
-      'https://pub-df7e277e704540ee850d5574a16bd35d.r2.dev';
+      'https://tocfl-data.anhtuan1811006.workers.dev';
   static const defaultRemoteDataRoot = '$publicDevelopmentUrl/tai_lieu_tocfl';
   static const _darkModeKey = 'appearance.darkMode';
   static const _geminiKey = 'gemini.apiKey';

@@ -71,7 +71,8 @@ class CatalogService {
       final request = await client.getUrl(uri);
       request.headers.set(HttpHeaders.acceptHeader, 'application/json');
       final response = await request.close();
-      if (response.statusCode != HttpStatus.ok) {
+      if (response.statusCode < HttpStatus.ok ||
+          response.statusCode >= HttpStatus.multipleChoices) {
         throw HttpException(
           'Không tải được catalog: HTTP ${response.statusCode}',
           uri: uri,

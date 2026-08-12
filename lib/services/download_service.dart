@@ -74,7 +74,8 @@ class DownloadService {
           );
           final request = await client.getUrl(uri);
           final response = await request.close();
-          if (response.statusCode != HttpStatus.ok) {
+          if (response.statusCode < HttpStatus.ok ||
+              response.statusCode >= HttpStatus.multipleChoices) {
             throw HttpException('HTTP ${response.statusCode}: $relativePath');
           }
           final temporary = File('${destination.path}.download');
