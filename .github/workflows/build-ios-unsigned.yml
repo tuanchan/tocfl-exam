@@ -1,0 +1,132 @@
+name: Build unsigned iOS IPA
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: unsigned-ios-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FLUTTER_PROJECT: .
+
+jobs:
+  build-unsigned-ipa:
+    name: Build unsigned IPA
+    runs-on: macos-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install Dart dependencies
+        working-directory: ${{ env.FLUTTER_PROJECT }}
+        run: flutter pub get
+
+      - name: Build iOS app without code signing
+        working-directory: ${{ env.FLUTTER_PROJECT }}
+        run: flutter build ios --release --no-codesign
+
+      - name: Remove signatures and create IPA
+        id: package
+        shell: bash
+        working-directory: ${{ env.FLUTTER_PROJECT }}
+        run: |
+          set -euo pipefail
+
+          SOURCE_APP="build/ios/iphoneos/Runner.app"
+          STAGING_DIR="$RUNNER_TEMP/tocfl-unsigned-ipa"
+          PAYLOAD_DIR="$STAGING_DIR/Payload"
+          TARGET_APP="$PAYLOAD_DIR/Runner.app"
+          OUTPUT_DIR="$PWD/build/ios/unsigned-ipa"
+          IPA_NAME="TOCFL-Full-Exam-${GITHUB_RUN_NUMBER}-unsigned.ipa"
+          IPA_PATH="$OUTPUT_DIR/$IPA_NAME"
+
+          if [[ ! -d "$SOURCE_APP" ]]; then
+            echo "::error::$SOURCE_APP was not found after the build."
+            exit 1
+          fi
+
+          rm -rf "$STAGING_DIR"
+          mkdir -p "$PAYLOAD_DIR" "$OUTPUT_DIR"
+          cp -R "$SOURCE_APP" "$TARGET_APP"
+
+          # Flutter can ad-hoc sign embedded code even with --no-codesign.
+          # Remove nested signatures first and the app signature last.
+          while IFS= read -r -d '' code_bundle; do
+            /usr/bin/codesign --remove-signature "$code_bundle" 2>/dev/null || true
+          done < <(
+            find "$TARGET_APP" -depth -type d \
+              \( -name "*.framework" -o -name "*.appex" -o -name "*.xpc" \) \
+              -print0
+          )
+
+          while IFS= read -r -d '' dylib; do
+            /usr/bin/codesign --remove-signature "$dylib" 2>/dev/null || true
+          done < <(find "$TARGET_APP" -type f -name "*.dylib" -print0)
+
+          /usr/bin/codesign --remove-signature "$TARGET_APP" 2>/dev/null || true
+          find "$TARGET_APP" -type d -name "_CodeSignature" -prune \
+            -exec rm -rf {} +
+          find "$TARGET_APP" -type f -name "embedded.mobileprovision" -delete
+
+          SIGNATURE_FOUND=0
+          while IFS= read -r -d '' code_bundle; do
+            if /usr/bin/codesign --display "$code_bundle" >/dev/null 2>&1; then
+              echo "::error::$code_bundle is still signed."
+              SIGNATURE_FOUND=1
+            fi
+          done < <(
+            find "$TARGET_APP" -depth -type d \
+              \( -name "*.framework" -o -name "*.appex" -o -name "*.xpc" \) \
+              -print0
+          )
+
+          while IFS= read -r -d '' dylib; do
+            if /usr/bin/codesign --display "$dylib" >/dev/null 2>&1; then
+              echo "::error::$dylib is still signed."
+              SIGNATURE_FOUND=1
+            fi
+          done < <(find "$TARGET_APP" -type f -name "*.dylib" -print0)
+
+          if /usr/bin/codesign --display "$TARGET_APP" >/dev/null 2>&1; then
+            echo "::error::Runner.app is still signed."
+            SIGNATURE_FOUND=1
+          fi
+
+          if [[ "$SIGNATURE_FOUND" -ne 0 ]]; then
+            exit 1
+          fi
+
+          rm -f "$IPA_PATH"
+          (
+            cd "$STAGING_DIR"
+            /usr/bin/ditto -c -k --sequesterRsrc --keepParent Payload "$IPA_PATH"
+          )
+
+          test -s "$IPA_PATH"
+          echo "ipa_name=$IPA_NAME" >> "$GITHUB_OUTPUT"
+          echo "ipa_path=$IPA_PATH" >> "$GITHUB_OUTPUT"
+          echo "### Unsigned IPA created: \`$IPA_NAME\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.ipa_name }}
+          path: ${{ steps.package.outputs.ipa_path }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
