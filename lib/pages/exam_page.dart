@@ -213,6 +213,13 @@ class _ExamPageState extends State<ExamPage> {
       decoration: BoxDecoration(border: Border.all(color: AppColors.blue)),
       child: path == null
           ? const Center(child: Text('Không tìm thấy tài liệu.'))
+          : _isRemoteLocation(path)
+          ? PdfViewer.uri(
+              Uri.parse(path),
+              key: ValueKey(path),
+              preferRangeAccess: true,
+              timeout: const Duration(seconds: 60),
+            )
           : PdfViewer.file(path, key: ValueKey(path)),
     );
   }
@@ -238,7 +245,7 @@ class _ExamPageState extends State<ExamPage> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         if (_audioFile != null) ...[
-          AudioControl(key: ValueKey(_audioFile), filePath: _audioFile!),
+          AudioControl(key: ValueKey(_audioFile), source: _audioFile!),
           const SizedBox(height: 10),
         ],
         Wrap(
@@ -1134,9 +1141,9 @@ class _Study4OptionTile extends StatelessWidget {
 }
 
 class AudioControl extends StatefulWidget {
-  const AudioControl({super.key, required this.filePath});
+  const AudioControl({super.key, required this.source});
 
-  final String filePath;
+  final String source;
 
   @override
   State<AudioControl> createState() => _AudioControlState();
@@ -1156,7 +1163,11 @@ class _AudioControlState extends State<AudioControl> {
 
   Future<void> _load() async {
     try {
-      await _player.setFilePath(widget.filePath);
+      if (_isRemoteLocation(widget.source)) {
+        await _player.setUrl(widget.source);
+      } else {
+        await _player.setFilePath(widget.source);
+      }
     } catch (error) {
       if (mounted) setState(() => _error = error.toString());
     }
@@ -1311,4 +1322,9 @@ class _AudioControlState extends State<AudioControl> {
     final seconds = value.inSeconds.remainder(60).toString().padLeft(2, '0');
     return '$minutes:$seconds';
   }
+}
+
+bool _isRemoteLocation(String value) {
+  final uri = Uri.tryParse(value);
+  return uri != null && (uri.scheme == 'https' || uri.scheme == 'http');
 }

@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -109,15 +110,15 @@ class GeminiService {
       {
         'inlineData': {
           'mimeType': 'application/pdf',
-          'data': base64Encode(await File(pdfFile).readAsBytes()),
+          'data': base64Encode(await _readSource(pdfFile)),
         },
       },
     ];
-    if (transcriptFile != null && await File(transcriptFile).exists()) {
+    if (transcriptFile != null) {
       parts.add({
         'inlineData': {
           'mimeType': 'application/pdf',
-          'data': base64Encode(await File(transcriptFile).readAsBytes()),
+          'data': base64Encode(await _readSource(transcriptFile)),
         },
       });
     }
@@ -171,6 +172,34 @@ class GeminiService {
       );
       await save(document.id, analysis);
       return analysis;
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  Future<Uint8List> _readSource(String source) async {
+    final uri = Uri.tryParse(source);
+    if (uri == null || (uri.scheme != 'https' && uri.scheme != 'http')) {
+      return File(source).readAsBytes();
+    }
+
+    final client = HttpClient();
+    client.connectionTimeout = const Duration(seconds: 20);
+    try {
+      final request = await client.getUrl(uri);
+      final response = await request.close();
+      if (response.statusCode < HttpStatus.ok ||
+          response.statusCode >= HttpStatus.multipleChoices) {
+        throw HttpException(
+          'Không tải được tài liệu: HTTP ${response.statusCode}',
+          uri: uri,
+        );
+      }
+      final bytes = BytesBuilder(copy: false);
+      await response
+          .forEach(bytes.add)
+          .timeout(const Duration(seconds: 90));
+      return bytes.takeBytes();
     } finally {
       client.close(force: true);
     }

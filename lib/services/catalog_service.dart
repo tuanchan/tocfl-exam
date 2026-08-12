@@ -116,10 +116,20 @@ class AssetLocationService {
     final normalized = relativePath.replaceAll('/', p.separator);
     if (Platform.isWindows) {
       final file = File(p.join(settings.localDataRoot, normalized));
-      return await file.exists() ? file.path : null;
+      if (await file.exists()) return file.path;
+    } else {
+      final root = await getApplicationSupportDirectory();
+      final file = File(p.join(root.path, 'tocfl', normalized));
+      if (await file.exists()) return file.path;
     }
-    final root = await getApplicationSupportDirectory();
-    final file = File(p.join(root.path, 'tocfl', normalized));
-    return await file.exists() ? file.path : null;
+
+    final remoteRoot = settings.remoteDataRoot.trim().isEmpty
+        ? SettingsStore.defaultRemoteDataRoot
+        : settings.remoteDataRoot.trim();
+    final encodedPath = relativePath
+        .split('/')
+        .map(Uri.encodeComponent)
+        .join('/');
+    return '${remoteRoot.replaceFirst(RegExp(r'/+$'), '')}/$encodedPath';
   }
 }
