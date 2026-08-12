@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
@@ -214,12 +216,7 @@ class _ExamPageState extends State<ExamPage> {
       child: path == null
           ? const Center(child: Text('Không tìm thấy tài liệu.'))
           : _isRemoteLocation(path)
-          ? PdfViewer.uri(
-              Uri.parse(path),
-              key: ValueKey(path),
-              preferRangeAccess: true,
-              timeout: const Duration(seconds: 60),
-            )
+          ? _RemotePdfViewer(uri: Uri.parse(path), key: ValueKey(path))
           : PdfViewer.file(path, key: ValueKey(path)),
     );
   }
@@ -1147,6 +1144,76 @@ class AudioControl extends StatefulWidget {
 
   @override
   State<AudioControl> createState() => _AudioControlState();
+}
+
+class _RemotePdfViewer extends StatefulWidget {
+  const _RemotePdfViewer({super.key, required this.uri});
+
+  final Uri uri;
+
+  @override
+  State<_RemotePdfViewer> createState() => _RemotePdfViewerState();
+}
+
+class _RemotePdfViewerState extends State<_RemotePdfViewer> {
+  late final Future<Uint8List> _bytes = _download();
+
+  Future<Uint8List> _download() async {
+    final client = HttpClient();
+    client.connectionTimeout = const Duration(seconds: 20);
+    try {
+      final request = await client.getUrl(widget.uri);
+      request.headers.set(HttpHeaders.acceptHeader, 'application/pdf');
+      final response = await request.close();
+      if (response.statusCode < HttpStatus.ok ||
+          response.statusCode >= HttpStatus.multipleChoices) {
+        throw HttpException(
+          'Không tải được PDF: HTTP ${response.statusCode}',
+          uri: widget.uri,
+        );
+      }
+      final builder = BytesBuilder(copy: false);
+      await response
+          .forEach(builder.add)
+          .timeout(const Duration(seconds: 90));
+      final bytes = builder.takeBytes();
+      if (bytes.isEmpty) {
+        throw HttpException('PDF không có dữ liệu', uri: widget.uri);
+      }
+      return bytes;
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<Uint8List>(
+      future: _bytes,
+      builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return Center(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Text(
+                'Không mở được PDF: ${snapshot.error}',
+                textAlign: TextAlign.center,
+              ),
+            ),
+          );
+        }
+        final bytes = snapshot.data;
+        if (bytes == null) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        return PdfViewer.data(
+          bytes,
+          sourceName: widget.uri.pathSegments.last,
+          key: ValueKey(widget.uri),
+        );
+      },
+    );
+  }
 }
 
 class _AudioControlState extends State<AudioControl> {

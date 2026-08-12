@@ -28,9 +28,20 @@ Future<Directory> downloadStorageRoot(SettingsStore settings) async {
   final documents = await getApplicationDocumentsDirectory();
   final visibleRoot = Directory(p.join(documents.path, 'tocfl'));
   await visibleRoot.create(recursive: true);
+  await _ensureReadme(visibleRoot);
   _iosMigration ??= _migrateLegacyIosDownloads(visibleRoot);
   await _iosMigration;
   return visibleRoot;
+}
+
+Future<void> _ensureReadme(Directory visibleRoot) async {
+  final file = File(p.join(visibleRoot.path, 'README.txt'));
+  if (await file.exists()) return;
+  await file.writeAsString(
+    'Thư mục đề TOCFL đã tải để học ngoại tuyến.\n'
+    'Có thể xem tại Files > On My iPhone > TOCFL Exam > tocfl.\n',
+    flush: true,
+  );
 }
 
 Future<void> _migrateLegacyIosDownloads(Directory visibleRoot) async {
