@@ -7,6 +7,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import '../models/tocfl_models.dart';
+import 'download_storage.dart';
 import 'settings_store.dart';
 
 class CatalogService {
@@ -15,6 +16,9 @@ class CatalogService {
   final SettingsStore settings;
 
   Future<TocflCatalog> load() async {
+    if (Platform.isIOS) {
+      await downloadStorageRoot(settings);
+    }
     if (Platform.isWindows) {
       final file = File(p.join(settings.localDataRoot, 'tocfl_catalog.json'));
       if (await file.exists()) {
@@ -118,8 +122,8 @@ class AssetLocationService {
       final file = File(p.join(settings.localDataRoot, normalized));
       if (await file.exists()) return file.path;
     } else {
-      final root = await getApplicationSupportDirectory();
-      final file = File(p.join(root.path, 'tocfl', normalized));
+      final root = await downloadStorageRoot(settings);
+      final file = File(p.join(root.path, normalized));
       if (await file.exists()) return file.path;
     }
 

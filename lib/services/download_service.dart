@@ -2,9 +2,9 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
 
 import '../models/tocfl_models.dart';
+import 'download_storage.dart';
 import 'settings_store.dart';
 
 class LevelDownloadProgress {
@@ -47,12 +47,7 @@ class DownloadService {
       }
     }
     final values = paths.toList(growable: false)..sort();
-    final root = Platform.isWindows
-        ? Directory(settings.localDataRoot)
-        : await getApplicationSupportDirectory();
-    final destinationRoot = Platform.isWindows
-        ? root.path
-        : p.join(root.path, 'tocfl');
+    final destinationRoot = (await downloadStorageRoot(settings)).path;
     final client = HttpClient();
     try {
       var completed = 0;
