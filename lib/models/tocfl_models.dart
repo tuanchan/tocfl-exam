@@ -236,5 +236,7 @@ class VocabularyEntry {
     'meaning': meaning,
   };
 
-  String get textLine => '$word:$meaning ($pinyin)';
+  String get textLine => pinyin.trim().isEmpty
+      ? '$word:$meaning'
+      : '$word:$meaning ($pinyin)';
 }

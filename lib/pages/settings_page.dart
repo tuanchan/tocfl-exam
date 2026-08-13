@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../core/app_theme.dart';
+import '../core/app_toast.dart';
 import '../services/gemini_service.dart';
 import '../services/settings_store.dart';
 
@@ -343,9 +344,11 @@ class _SettingsPageState extends State<SettingsPage> {
     );
     await widget.reloadCatalog();
     if (mounted) {
-      ScaffoldMessenger.of(
+      AppToast.show(
         context,
-      ).showSnackBar(const SnackBar(content: Text('Đã lưu thư mục Windows.')));
+        'Đã lưu thư mục Windows.',
+        tone: AppToastTone.success,
+      );
     }
   }
 
@@ -355,14 +358,12 @@ class _SettingsPageState extends State<SettingsPage> {
       model: _selectedModel,
     );
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          _apiKey.text.trim().isEmpty
-              ? 'Đã xóa API key Gemini.'
-              : 'Đã lưu API key và model $_selectedModel.',
-        ),
-      ),
+    AppToast.show(
+      context,
+      _apiKey.text.trim().isEmpty
+          ? 'Đã xóa API key Gemini.'
+          : 'Đã lưu API key và model $_selectedModel.',
+      tone: AppToastTone.success,
     );
     setState(() {});
   }
@@ -373,8 +374,10 @@ class _SettingsPageState extends State<SettingsPage> {
       mode: LaunchMode.externalApplication,
     );
     if (!opened && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Không mở được trang lấy API key.')),
+      AppToast.show(
+        context,
+        'Không mở được trang lấy API key.',
+        tone: AppToastTone.error,
       );
     }
   }

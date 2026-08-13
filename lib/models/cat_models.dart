@@ -351,31 +351,6 @@ class CatEngine {
     _appendAnswer(question, selectedAnswer);
   }
 
-  void reviseAnswer(CatQuestion question, String? selectedAnswer) {
-    final answerIndex = answers.indexWhere(
-      (answer) => answer.question.id == question.id,
-    );
-    if (answerIndex == -1) {
-      throw StateError('Câu hỏi ${question.id} chưa được ghi nhận.');
-    }
-
-    final revisedAnswers = <(CatQuestion, String?)>[
-      for (var index = 0; index < answers.length; index++)
-        (
-          answers[index].question,
-          index == answerIndex ? selectedAnswer : answers[index].selectedAnswer,
-        ),
-    ];
-
-    answers.clear();
-    _recentAbilities.clear();
-    ability = 420;
-    standardError = 220;
-    for (final answer in revisedAnswers) {
-      _appendAnswer(answer.$1, answer.$2);
-    }
-  }
-
   void _appendAnswer(CatQuestion question, String? selectedAnswer) {
     final provisional = CatAnswerRecord(
       question: question,
@@ -500,9 +475,7 @@ List<CatQuestion> buildCatQuestionPool(
   final generator = random ?? Random.secure();
   final pool = <CatQuestion>[];
   for (final document in catalog.items) {
-    final matchesSkill = skill == CatSkill.listening
-        ? document.isListening
-        : !document.isListening;
+    final matchesSkill = document.skill == skill.name;
     if (!matchesSkill || document.answers.isEmpty) continue;
 
     // Đưa toàn bộ câu con vào ngân hàng. CatEngine sẽ chọn câu phù hợp nhất rồi

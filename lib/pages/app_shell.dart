@@ -37,7 +37,7 @@ class _AppShellState extends State<AppShell> {
     'Thống kê',
     'Tải đề',
     'Cài đặt',
-    'Từ vựng TXT',
+    'Danh sách từ vựng',
   ];
 
   @override

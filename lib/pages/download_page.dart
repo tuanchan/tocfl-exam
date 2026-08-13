@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 
 import '../core/app_theme.dart';
+import '../core/app_toast.dart';
 import '../models/tocfl_models.dart';
 import '../services/download_service.dart';
 import '../services/settings_store.dart';
@@ -203,8 +204,6 @@ class _DownloadPageState extends State<DownloadPage> {
   }
 
   void _showCompleted(String message) {
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(message)));
+    AppToast.show(context, message, tone: AppToastTone.success);
   }
 }

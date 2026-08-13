@@ -9,6 +9,7 @@ import 'package:pdfrx/pdfrx.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../core/app_theme.dart';
+import '../core/app_toast.dart';
 import '../models/cat_models.dart';
 import '../models/tocfl_models.dart';
 import '../services/catalog_service.dart';
@@ -22,12 +23,26 @@ class CatHomePage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final listeningCount = catalog.items
-        .where((item) => item.isListening)
-        .length;
-    final readingCount = catalog.items
-        .where((item) => !item.isListening)
-        .length;
+    final listeningDocuments = catalog.items
+        .where((item) => item.isListening && item.answers.isNotEmpty)
+        .toList(growable: false);
+    final readingDocuments = catalog.items
+        .where(
+          (item) =>
+              item.skill == CatSkill.reading.name && item.answers.isNotEmpty,
+        )
+        .toList(growable: false);
+    final listeningQuestionCount = listeningDocuments.fold<int>(
+      0,
+      (sum, item) => sum + item.answers.length,
+    );
+    final readingQuestionCount = readingDocuments.fold<int>(
+      0,
+      (sum, item) => sum + item.answers.length,
+    );
+    final hasEnoughQuestions =
+        listeningQuestionCount >= CatEngine.minimumQuestionCount &&
+        readingQuestionCount >= CatEngine.minimumQuestionCount;
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
@@ -62,14 +77,17 @@ class CatHomePage extends StatelessWidget {
               ),
               const _RuleLine(
                 text:
-                    'Phần Nghe không thể quay lại sau khi xác nhận. Phần Đọc ở chế độ luyện tập cho phép quay lại, đổi đáp án và đánh dấu xem lại.',
+                    'Sau khi xác nhận và sang ngữ liệu tiếp theo, cả phần Nghe và Đọc đều không thể quay lại hoặc sửa đáp án.',
               ),
               const _RuleLine(
                 text:
                     'Đọc trả lời dưới 25 câu sẽ bị điều chỉnh điểm theo tỷ lệ số câu đã trả lời/25.',
               ),
               Text(
-                'Kho hiện có: $listeningCount tài liệu Nghe và $readingCount tài liệu Đọc.',
+                'Kho hiện có: ${listeningDocuments.length} tài liệu / '
+                '$listeningQuestionCount câu Nghe và '
+                '${readingDocuments.length} tài liệu / '
+                '$readingQuestionCount câu Đọc.',
                 style: const TextStyle(fontWeight: FontWeight.w800),
               ),
             ],
@@ -144,10 +162,12 @@ class CatHomePage extends StatelessWidget {
         ),
         const SizedBox(height: 16),
         AppTextButton(
-          label: 'Bắt đầu thi CAT',
+          label: !hasEnoughQuestions
+              ? 'Kho đề chưa đủ 25 câu mỗi kỹ năng'
+              : 'Bắt đầu thi CAT',
           filled: true,
           expand: true,
-          onPressed: catalog.items.isEmpty
+          onPressed: !hasEnoughQuestions
               ? null
               : () => Navigator.of(context).push(
                   MaterialPageRoute<void>(
@@ -166,8 +186,10 @@ class CatHomePage extends StatelessWidget {
       mode: LaunchMode.externalApplication,
     );
     if (!opened && context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Không mở được trang thể lệ chính thức.')),
+      AppToast.show(
+        context,
+        'Không mở được trang thể lệ chính thức.',
+        tone: AppToastTone.error,
       );
     }
   }
@@ -216,33 +238,19 @@ class _CatExamPageState extends State<CatExamPage> {
   bool _finished = false;
   bool _finishingSkill = false;
   bool _submittingAnswer = false;
+  bool _listeningAudioFailed = false;
   int _assetRequest = 0;
   final Map<String, String> _selectedAnswers = {};
-  final List<CatQuestionBlock> _readingBlocks = [];
-  final Set<String> _markedReadingQuestions = {};
-  int _readingBlockIndex = 0;
 
-  List<CatQuestion> get _readingQuestions => [
-    for (final block in _readingBlocks) ...block.questions,
-  ];
-
-  int get _currentBlockStartIndex {
-    if (_skill != CatSkill.reading) return _engine.presentedCount;
-    var result = 0;
-    for (var index = 0; index < _readingBlockIndex; index++) {
-      result += _readingBlocks[index].questionCount;
-    }
-    return result;
-  }
+  int get _currentBlockStartIndex => _engine.presentedCount;
 
   int get _currentQuestionNumber => _currentBlockStartIndex + 1;
 
   int get _currentQuestionEndNumber =>
       _currentBlockStartIndex + (_questionBlock?.questionCount ?? 1);
 
-  int get _visibleQuestionCount => _skill == CatSkill.reading
-      ? _readingQuestions.length
-      : _engine.presentedCount + (_questionBlock?.questionCount ?? 0);
+  int get _visibleQuestionCount =>
+      _engine.presentedCount + (_questionBlock?.questionCount ?? 0);
 
   @override
   void initState() {
@@ -278,15 +286,10 @@ class _CatExamPageState extends State<CatExamPage> {
       _betweenSkills = false;
       _finishingSkill = false;
       _submittingAnswer = false;
+      _listeningAudioFailed = false;
       _listeningAnswerSeconds = null;
       _secondsLeft = skill == CatSkill.listening ? 50 * 60 : 60 * 60;
       _selectedAnswers.clear();
-      _readingBlocks.clear();
-      _markedReadingQuestions.clear();
-      _readingBlockIndex = 0;
-      if (skill == CatSkill.reading) {
-        _readingBlocks.add(block);
-      }
     }
 
     if (notify) {
@@ -352,53 +355,13 @@ class _CatExamPageState extends State<CatExamPage> {
     setState(() => _listeningAnswerSeconds = 10);
   }
 
+  void _audioFailed() {
+    if (!mounted || _skill != CatSkill.listening || _finishingSkill) return;
+    setState(() => _listeningAudioFailed = true);
+  }
+
   void _selectAnswer(CatQuestion question, String answer) {
-    if (_skill == CatSkill.reading) {
-      if (_engine.hasRecordedAnswer(question.id)) {
-        _engine.reviseAnswer(question, answer);
-      }
-    }
     setState(() => _selectedAnswers[question.id] = answer);
-  }
-
-  void _toggleReadingMark(CatQuestion question) {
-    if (_skill != CatSkill.reading) return;
-    setState(() {
-      if (!_markedReadingQuestions.add(question.id)) {
-        _markedReadingQuestions.remove(question.id);
-      }
-    });
-  }
-
-  Future<void> _showReadingBlock(int index) async {
-    if (_skill != CatSkill.reading ||
-        index < 0 ||
-        index >= _readingBlocks.length ||
-        index == _readingBlockIndex) {
-      return;
-    }
-
-    final block = _readingBlocks[index];
-    final question = block.questions.first;
-    setState(() {
-      _readingBlockIndex = index;
-      _question = question;
-      _questionBlock = block;
-      _pdfFile = null;
-      _audioFile = null;
-      _assetError = null;
-      _loadingAssets = true;
-    });
-    await _loadQuestionAssets(question);
-  }
-
-  int _readingBlockIndexForQuestion(int questionIndex) {
-    var offset = 0;
-    for (var blockIndex = 0; blockIndex < _readingBlocks.length; blockIndex++) {
-      offset += _readingBlocks[blockIndex].questionCount;
-      if (questionIndex < offset) return blockIndex;
-    }
-    return _readingBlocks.length - 1;
   }
 
   void _commitCurrentBlock() {
@@ -423,12 +386,6 @@ class _CatExamPageState extends State<CatExamPage> {
       return;
     }
 
-    if (_skill == CatSkill.reading &&
-        _readingBlockIndex < _readingBlocks.length - 1) {
-      await _showReadingBlock(_readingBlockIndex + 1);
-      return;
-    }
-
     _submittingAnswer = true;
     _commitCurrentBlock();
     if (_engine.shouldStop) {
@@ -440,10 +397,6 @@ class _CatExamPageState extends State<CatExamPage> {
     final nextBlock = _engine.nextQuestionBlock();
     final next = nextBlock.questions.first;
     setState(() {
-      if (_skill == CatSkill.reading) {
-        _readingBlocks.add(nextBlock);
-        _readingBlockIndex = _readingBlocks.length - 1;
-      }
       _question = next;
       _questionBlock = nextBlock;
       _pdfFile = null;
@@ -451,6 +404,7 @@ class _CatExamPageState extends State<CatExamPage> {
       _assetError = null;
       _loadingAssets = true;
       _listeningAnswerSeconds = null;
+      _listeningAudioFailed = false;
     });
     _submittingAnswer = false;
     unawaited(_loadQuestionAssets(next));
@@ -471,44 +425,17 @@ class _CatExamPageState extends State<CatExamPage> {
         _betweenSkills = true;
         _finishingSkill = false;
       });
-      ScaffoldMessenger.of(
+      AppToast.show(
         context,
-      ).showSnackBar(SnackBar(content: Text('$reason Phần Nghe đã kết thúc.')));
+        '$reason Phần Nghe đã kết thúc.',
+        tone: AppToastTone.info,
+      );
     } else {
       setState(() {
         _readingResult = result;
         _finished = true;
         _finishingSkill = false;
       });
-    }
-  }
-
-  Future<void> _confirmFinishEarly() async {
-    final answered = _selectedAnswers.length;
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Nộp phần ${_skill.label} sớm?'),
-        content: Text(
-          _skill == CatSkill.reading && answered < 25
-              ? 'Bạn mới trả lời $answered câu. Điểm Đọc sẽ bị nhân tỷ lệ '
-                    '$answered/25 theo quy tắc CAT.'
-              : 'Các câu chưa làm không được tính. Bạn không thể quay lại sau khi nộp.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Tiếp tục làm'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Nộp sớm'),
-          ),
-        ],
-      ),
-    );
-    if (confirmed == true) {
-      await _finishSkill(reason: 'Bạn đã nộp sớm.');
     }
   }
 
@@ -522,13 +449,6 @@ class _CatExamPageState extends State<CatExamPage> {
     return Scaffold(
       appBar: AppBar(
         title: Text('CAT • ${_skill.label}'),
-        actions: [
-          TextButton(
-            onPressed: _confirmFinishEarly,
-            child: const Text('Nộp sớm'),
-          ),
-          const SizedBox(width: 6),
-        ],
       ),
       body: Column(
         children: [
@@ -643,15 +563,16 @@ class _CatExamPageState extends State<CatExamPage> {
   Widget _answerPanel(CatQuestionBlock block) {
     final document = block.document;
     final reading = _skill == CatSkill.reading;
-    final hasKnownNext =
-        reading && _readingBlockIndex < _readingBlocks.length - 1;
     final answeredInBlock = block.questions
         .where((question) => _selectedAnswers.containsKey(question.id))
         .length;
     final unansweredInBlock = block.questionCount - answeredInBlock;
+    final listeningCanAdvance =
+        _listeningAnswerSeconds != null ||
+        _listeningAudioFailed ||
+        (!_loadingAssets && _audioFile == null);
 
     Widget questionOptions(CatQuestion question, int index) {
-      final marked = _markedReadingQuestions.contains(question.id);
       final selectedAnswer = _selectedAnswers[question.id];
       return Padding(
         padding: const EdgeInsets.only(bottom: 16),
@@ -662,8 +583,6 @@ class _CatExamPageState extends State<CatExamPage> {
               children: [
                 _CatQuestionNumberBadge(
                   number: _currentQuestionNumber + index,
-                  marked: marked,
-                  onTap: reading ? () => _toggleReadingMark(question) : null,
                 ),
                 const SizedBox(width: 12),
                 Expanded(
@@ -700,6 +619,7 @@ class _CatExamPageState extends State<CatExamPage> {
             key: ValueKey('${document.id}/$_audioFile'),
             source: _audioFile!,
             onCompleted: _audioCompleted,
+            onFailed: _audioFailed,
           ),
         ],
         if (_listeningAnswerSeconds != null) ...[
@@ -724,33 +644,20 @@ class _CatExamPageState extends State<CatExamPage> {
           questionOptions(block.questions[index], index),
         const SizedBox(height: 8),
         if (reading) ...[
-          Row(
-            children: [
-              Expanded(
-                child: AppTextButton(
-                  label: 'Câu trước',
-                  onPressed: _readingBlockIndex == 0
-                      ? null
-                      : () => _showReadingBlock(_readingBlockIndex - 1),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: AppTextButton(
-                  label: hasKnownNext
-                      ? 'Câu tiếp'
-                      : unansweredInBlock > 0
-                      ? 'Bỏ qua $unansweredInBlock câu và tiếp'
-                      : 'Xác nhận và tiếp',
-                  danger: !hasKnownNext && unansweredInBlock > 0,
-                  filled: true,
-                  onPressed: _submittingAnswer ? null : _submitAnswer,
-                ),
-              ),
-            ],
+          AppTextButton(
+            label: unansweredInBlock > 0
+                ? 'Bỏ qua $unansweredInBlock câu và tiếp'
+                : 'Xác nhận và sang ngữ liệu tiếp',
+            danger: unansweredInBlock > 0,
+            filled: true,
+            expand: true,
+            onPressed: _submittingAnswer ? null : _submitAnswer,
           ),
-          const SizedBox(height: 14),
-          _readingQuestionIndexBar(),
+          const SizedBox(height: 10),
+          const Text(
+            'Các câu chưa chọn được tính sai. Sau khi sang ngữ liệu tiếp theo, bạn không thể quay lại hoặc sửa đáp án.',
+            style: TextStyle(fontSize: 12),
+          ),
         ] else ...[
           AppTextButton(
             label: unansweredInBlock == 0
@@ -758,98 +665,29 @@ class _CatExamPageState extends State<CatExamPage> {
                 : 'Xác nhận $answeredInBlock/${block.questionCount} câu và tiếp',
             filled: true,
             expand: true,
-            onPressed: answeredInBlock == 0 ? null : _submitAnswer,
+            onPressed:
+                answeredInBlock == 0 || !listeningCanAdvance || _submittingAnswer
+                ? null
+                : _submitAnswer,
           ),
           const SizedBox(height: 8),
           AppTextButton(
             label: 'Bỏ qua cụm này (tính sai)',
             danger: true,
             expand: true,
-            onPressed: _submitAnswer,
+            onPressed: !listeningCanAdvance || _submittingAnswer
+                ? null
+                : _submitAnswer,
           ),
           const SizedBox(height: 10),
-          const Text(
-            'Các câu chưa chọn được tính sai. Sau khi sang cụm tiếp theo, bạn không thể quay lại.',
-            style: TextStyle(fontSize: 12),
+          Text(
+            !listeningCanAdvance
+                ? 'Nghe hết âm thanh trước khi sang cụm tiếp theo. Sau khi âm thanh kết thúc, câu sẽ tự chuyển sau 10 giây.'
+                : 'Các câu chưa chọn được tính sai. Sau khi sang cụm tiếp theo, bạn không thể quay lại.',
+            style: const TextStyle(fontSize: 12),
           ),
         ],
       ],
-    );
-  }
-
-  Widget _readingQuestionIndexBar() {
-    final theme = Theme.of(context);
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 18),
-      decoration: BoxDecoration(
-        color: theme.scaffoldBackgroundColor,
-        border: Border.all(color: AppColors.blue.withValues(alpha: 0.35)),
-        borderRadius: BorderRadius.circular(6),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            'Danh sách câu hỏi',
-            style: TextStyle(fontSize: 17, fontWeight: FontWeight.w900),
-          ),
-          const SizedBox(height: 10),
-          const Text(
-            'Chú ý: chạm vào số tròn của câu hỏi để đánh dấu xem lại.',
-            style: TextStyle(
-              color: Color(0xFFFF9D22),
-              fontSize: 13,
-              height: 1.35,
-              fontStyle: FontStyle.italic,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'Đã làm ${_selectedAnswers.length}/$_maximumQuestionCount câu tối đa',
-            style: TextStyle(
-              color: theme.colorScheme.onSurface.withValues(alpha: 0.68),
-              fontSize: 13,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          const SizedBox(height: 16),
-          const Text(
-            'Đọc',
-            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
-          ),
-          const SizedBox(height: 10),
-          Wrap(
-            spacing: 7,
-            runSpacing: 8,
-            children: [
-              for (var index = 0; index < _maximumQuestionCount; index++)
-                _CatQuestionIndexButton(
-                  number: index + 1,
-                  current:
-                      index >= _currentBlockStartIndex &&
-                      index < _currentQuestionEndNumber,
-                  answered: index < _readingQuestions.length
-                      ? _selectedAnswers.containsKey(
-                          _readingQuestions[index].id,
-                        )
-                      : false,
-                  marked: index < _readingQuestions.length
-                      ? _markedReadingQuestions.contains(
-                          _readingQuestions[index].id,
-                        )
-                      : false,
-                  onTap: index < _readingQuestions.length
-                      ? () => _showReadingBlock(
-                          _readingBlockIndexForQuestion(index),
-                        )
-                      : null,
-                ),
-            ],
-          ),
-        ],
-      ),
     );
   }
 
@@ -1031,111 +869,26 @@ class _CatExamPageState extends State<CatExamPage> {
 }
 
 class _CatQuestionNumberBadge extends StatelessWidget {
-  const _CatQuestionNumberBadge({
-    required this.number,
-    required this.marked,
-    required this.onTap,
-  });
+  const _CatQuestionNumberBadge({required this.number});
 
   final int number;
-  final bool marked;
-  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
-    final color = marked
-        ? const Color(0xFFFF9D22)
-        : AppColors.blue.withValues(alpha: 0.12);
-    final badge = Container(
+    return Container(
       width: 38,
       height: 38,
       alignment: Alignment.center,
-      decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+      decoration: BoxDecoration(
+        color: AppColors.blue.withValues(alpha: 0.12),
+        shape: BoxShape.circle,
+      ),
       child: Text(
         '$number',
-        style: TextStyle(
-          color: marked ? AppColors.white : AppColors.blue,
+        style: const TextStyle(
+          color: AppColors.blue,
           fontSize: 15,
           fontWeight: FontWeight.w900,
-        ),
-      ),
-    );
-    if (onTap == null) return badge;
-    return Tooltip(
-      message: marked ? 'Bỏ đánh dấu xem lại' : 'Đánh dấu xem lại',
-      child: InkWell(
-        onTap: onTap,
-        customBorder: const CircleBorder(),
-        child: badge,
-      ),
-    );
-  }
-}
-
-class _CatQuestionIndexButton extends StatelessWidget {
-  const _CatQuestionIndexButton({
-    required this.number,
-    required this.current,
-    required this.answered,
-    required this.marked,
-    required this.onTap,
-  });
-
-  final int number;
-  final bool current;
-  final bool answered;
-  final bool marked;
-  final VoidCallback? onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final markedColor = const Color(0xFFFF9D22);
-    final enabled = onTap != null;
-    final background = current
-        ? AppColors.blue
-        : marked
-        ? markedColor
-        : answered
-        ? AppColors.blue
-        : AppColors.blue.withValues(alpha: enabled ? 0.06 : 0.025);
-    final foreground = current || marked || answered
-        ? AppColors.white
-        : Theme.of(
-            context,
-          ).colorScheme.onSurface.withValues(alpha: enabled ? 0.82 : 0.36);
-    final border = marked
-        ? markedColor
-        : current || answered
-        ? AppColors.blue
-        : AppColors.blue.withValues(alpha: enabled ? 0.35 : 0.12);
-
-    return Semantics(
-      button: true,
-      enabled: enabled,
-      selected: current,
-      label: 'Câu $number${marked ? ', đã đánh dấu' : ''}',
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(4),
-        child: Container(
-          width: 38,
-          height: 34,
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            color: background,
-            border: Border.all(color: border, width: current ? 2 : 1),
-            borderRadius: BorderRadius.circular(4),
-          ),
-          child: Text(
-            '$number',
-            style: TextStyle(
-              color: foreground,
-              fontSize: 13,
-              fontWeight: current || marked || answered
-                  ? FontWeight.w900
-                  : FontWeight.w500,
-            ),
-          ),
         ),
       ),
     );
@@ -1195,10 +948,12 @@ class _CatAudioPlayer extends StatefulWidget {
     super.key,
     required this.source,
     required this.onCompleted,
+    required this.onFailed,
   });
 
   final String source;
   final VoidCallback onCompleted;
+  final VoidCallback onFailed;
 
   @override
   State<_CatAudioPlayer> createState() => _CatAudioPlayerState();
@@ -1235,7 +990,10 @@ class _CatAudioPlayerState extends State<_CatAudioPlayer> {
       setState(() => _loaded = true);
       await _player.play();
     } catch (error) {
-      if (mounted) setState(() => _error = error.toString());
+      if (mounted) {
+        setState(() => _error = error.toString());
+        widget.onFailed();
+      }
     }
   }
 

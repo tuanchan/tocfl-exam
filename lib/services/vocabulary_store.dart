@@ -31,17 +31,19 @@ class VocabularyStore {
   Future<List<String>> listFiles() async {
     final folder = await directory();
     final names = <String>[];
+    final knownNames = <String>{};
     await for (final entity in folder.list()) {
       if (entity is File && p.extension(entity.path).toLowerCase() == '.txt') {
-        names.add(p.basename(entity.path));
+        final name = p.basename(entity.path);
+        if (knownNames.add(name.toLowerCase())) names.add(name);
       }
     }
-    if (!names.contains(defaultFilename)) {
+    if (knownNames.add(defaultFilename.toLowerCase())) {
       names.add(defaultFilename);
     }
     names.sort((left, right) {
-      if (left == defaultFilename) return -1;
-      if (right == defaultFilename) return 1;
+      if (left.toLowerCase() == defaultFilename) return -1;
+      if (right.toLowerCase() == defaultFilename) return 1;
       return left.toLowerCase().compareTo(right.toLowerCase());
     });
     return names;
@@ -50,6 +52,32 @@ class VocabularyStore {
   Future<String> lastFilename() async {
     final saved = await _preferences.getString(_lastFilenameKey);
     return normalizeFilename(saved ?? defaultFilename);
+  }
+
+  Future<void> selectFile(String filename) async {
+    await _preferences.setString(
+      _lastFilenameKey,
+      normalizeFilename(filename),
+    );
+  }
+
+  Future<String> createFile(String filename) async {
+    final cleanFilename = normalizeFilename(filename);
+    final folder = await directory();
+    var actualFilename = cleanFilename;
+    await for (final entity in folder.list()) {
+      if (entity is File &&
+          p.basename(entity.path).toLowerCase() == cleanFilename.toLowerCase()) {
+        actualFilename = p.basename(entity.path);
+        break;
+      }
+    }
+    final file = File(p.join(folder.path, actualFilename));
+    if (!await file.exists()) {
+      await file.writeAsString('', flush: true);
+    }
+    await selectFile(actualFilename);
+    return actualFilename;
   }
 
   Future<List<String>> readLines(String filename) async {
@@ -85,6 +113,78 @@ class VocabularyStore {
     await _writeLines(cleanFilename, lines);
     await _preferences.setString(_lastFilenameKey, cleanFilename);
     return true;
+  }
+
+  Future<bool> updateEntryAt({
+    required String filename,
+    required int index,
+    required String word,
+    required String meaning,
+    String pinyin = '',
+  }) async {
+    final entry = VocabularyEntry(
+      word: word.trim(),
+      pinyin: pinyin.trim(),
+      meaning: meaning.trim(),
+    );
+    if (entry.word.isEmpty || entry.meaning.isEmpty) return false;
+
+    final cleanFilename = normalizeFilename(filename);
+    final lines = (await readLines(cleanFilename)).toList();
+    if (index < 0 || index >= lines.length) {
+      throw RangeError.index(index, lines, 'index');
+    }
+    final key = _wordKey(entry.word);
+    for (var lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+      if (lineIndex != index &&
+          _wordKey(lines[lineIndex].split(':').first) == key) {
+        await selectFile(cleanFilename);
+        return false;
+      }
+    }
+    lines[index] = entry.textLine;
+    await _writeLines(cleanFilename, lines);
+    await selectFile(cleanFilename);
+    return true;
+  }
+
+  Future<void> deleteEntryAt({
+    required String filename,
+    required int index,
+  }) async {
+    final cleanFilename = normalizeFilename(filename);
+    final lines = (await readLines(cleanFilename)).toList();
+    if (index < 0 || index >= lines.length) {
+      throw RangeError.index(index, lines, 'index');
+    }
+    lines.removeAt(index);
+    await _writeLines(cleanFilename, lines);
+    await selectFile(cleanFilename);
+  }
+
+  Future<bool> deleteFile(String filename) async {
+    final cleanFilename = normalizeFilename(filename);
+    final file = File(await filePath(cleanFilename));
+    if (!await file.exists()) return false;
+    await file.delete();
+    return true;
+  }
+
+  VocabularyEntry parseLine(String line) {
+    final separator = line.indexOf(':');
+    if (separator < 0) {
+      return VocabularyEntry(word: line.trim(), pinyin: '', meaning: '');
+    }
+
+    final word = line.substring(0, separator).trim();
+    var meaning = line.substring(separator + 1).trim();
+    var pinyin = '';
+    final pinyinMatch = RegExp(r'\s*\(([^()]*)\)\s*$').firstMatch(meaning);
+    if (pinyinMatch != null) {
+      pinyin = (pinyinMatch.group(1) ?? '').trim();
+      meaning = meaning.substring(0, pinyinMatch.start).trim();
+    }
+    return VocabularyEntry(word: word, pinyin: pinyin, meaning: meaning);
   }
 
   Future<int> mergeEntries(

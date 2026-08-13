@@ -288,7 +288,7 @@ void main() {
     });
   }
 
-  test('a recorded reading answer can be revised without duplication', () {
+  test('a recorded CAT answer cannot be recorded a second time', () {
     final document = ExamDocument(
       id: 'reading-revision',
       levelCode: '02',
@@ -318,12 +318,14 @@ void main() {
     engine.recordAnswer(first, first.correctAnswer);
     final abilityWithCorrectAnswer = engine.ability;
 
-    engine.reviseAnswer(first, first.correctAnswer == 'A' ? 'B' : 'A');
-
+    expect(
+      () => engine.recordAnswer(first, first.correctAnswer == 'A' ? 'B' : 'A'),
+      throwsStateError,
+    );
     expect(engine.presentedCount, 1);
     expect(engine.answeredCount, 1);
-    expect(engine.correctCount, 0);
-    expect(engine.ability, lessThan(abilityWithCorrectAnswer));
+    expect(engine.correctCount, 1);
+    expect(engine.ability, abilityWithCorrectAnswer);
   });
 }
 

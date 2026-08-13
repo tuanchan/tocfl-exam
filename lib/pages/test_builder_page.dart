@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 
 import '../core/app_theme.dart';
+import '../core/app_toast.dart';
 import '../models/tocfl_models.dart';
 import '../services/created_test_store.dart';
 
@@ -313,10 +314,10 @@ class _TestBuilderPageState extends State<TestBuilderPage> {
   Future<void> _start() async {
     var questions = _availableQuestions();
     if (questions.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Hãy chọn ít nhất một cấp và một kỹ năng.'),
-        ),
+      AppToast.show(
+        context,
+        'Hãy chọn ít nhất một cấp và một kỹ năng.',
+        tone: AppToastTone.warning,
       );
       return;
     }
@@ -331,8 +332,10 @@ class _TestBuilderPageState extends State<TestBuilderPage> {
           .toList();
     }
     if (questions.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Hãy chọn ít nhất một câu hỏi.')),
+      AppToast.show(
+        context,
+        'Hãy chọn ít nhất một câu hỏi.',
+        tone: AppToastTone.warning,
       );
       return;
     }
@@ -359,9 +362,11 @@ class _TestBuilderPageState extends State<TestBuilderPage> {
       setState(() => _savedTests = tests);
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(
+      AppToast.show(
         context,
-      ).showSnackBar(SnackBar(content: Text('Không lưu được đề: $error')));
+        'Không lưu được đề: $error',
+        tone: AppToastTone.error,
+      );
       return;
     }
     widget.openExam(
@@ -402,12 +407,10 @@ class _TestBuilderPageState extends State<TestBuilderPage> {
       validQuestionIds.add(questionId);
     }
     if (validQuestionIds.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Các câu trong đề này không còn trong dữ liệu hiện tại.',
-          ),
-        ),
+      AppToast.show(
+        context,
+        'Các câu trong đề này không còn trong dữ liệu hiện tại.',
+        tone: AppToastTone.warning,
       );
       return;
     }
@@ -473,9 +476,11 @@ class _TestBuilderPageState extends State<TestBuilderPage> {
       if (mounted) setState(() => _savedTests = tests);
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(
+      AppToast.show(
         context,
-      ).showSnackBar(SnackBar(content: Text('Không đổi được tên đề: $error')));
+        'Không đổi được tên đề: $error',
+        tone: AppToastTone.error,
+      );
     }
   }
 

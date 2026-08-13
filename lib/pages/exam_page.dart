@@ -8,6 +8,7 @@ import 'package:just_audio/just_audio.dart';
 import 'package:pdfrx/pdfrx.dart';
 
 import '../core/app_theme.dart';
+import '../core/app_toast.dart';
 import '../models/tocfl_models.dart';
 import '../services/catalog_service.dart';
 import '../services/gemini_service.dart';
@@ -661,9 +662,11 @@ class _ExamPageState extends State<ExamPage> {
       }
     } catch (error) {
       if (mounted) {
-        ScaffoldMessenger.of(
+        AppToast.show(
           context,
-        ).showSnackBar(SnackBar(content: Text('Gemini lỗi: $error')));
+          'Gemini lỗi: $error',
+          tone: AppToastTone.error,
+        );
       }
     } finally {
       if (mounted) setState(() => _analyzing = false);
@@ -682,14 +685,12 @@ class _ExamPageState extends State<ExamPage> {
       final alreadyGraded = indexes.any(
         (index) => _revealedAnswers.contains(_questionId(index)),
       );
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            alreadyGraded
-                ? 'Các câu đã chọn trên tài liệu này đã được chấm.'
-                : 'Hãy chọn đáp án trước khi chấm.',
-          ),
-        ),
+      AppToast.show(
+        context,
+        alreadyGraded
+            ? 'Các câu đã chọn trên tài liệu này đã được chấm.'
+            : 'Hãy chọn đáp án trước khi chấm.',
+        tone: AppToastTone.warning,
       );
       return;
     }
@@ -718,13 +719,17 @@ class _ExamPageState extends State<ExamPage> {
       }
       if (!mounted) return;
       setState(() {});
-      ScaffoldMessenger.of(
+      AppToast.show(
         context,
-      ).showSnackBar(SnackBar(content: Text('Đúng: $correct • Sai: $wrong')));
+        'Đúng: $correct • Sai: $wrong',
+        tone: AppToastTone.success,
+      );
     } catch (error) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Không chấm được đáp án: $error')),
+        AppToast.show(
+          context,
+          'Không chấm được đáp án: $error',
+          tone: AppToastTone.error,
         );
       }
     } finally {
@@ -767,14 +772,12 @@ class _ExamPageState extends State<ExamPage> {
       initialPinyin: initialPinyin,
     );
     if (!mounted || result == null) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          result.added
-              ? 'Đã lưu "${result.word}" vào ${result.filename}.'
-              : '"${result.word}" đã có trong ${result.filename}.',
-        ),
-      ),
+    AppToast.show(
+      context,
+      result.added
+          ? 'Đã lưu "${result.word}" vào ${result.filename}.'
+          : '"${result.word}" đã có trong ${result.filename}.',
+      tone: result.added ? AppToastTone.success : AppToastTone.warning,
     );
   }
 
