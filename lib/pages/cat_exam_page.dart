@@ -215,6 +215,8 @@ class _CatExamPageState extends State<CatExamPage> {
   bool _submittingAnswer = false;
   int _assetRequest = 0;
 
+  int get _currentQuestionNumber => _engine.presentedCount + 1;
+
   @override
   void initState() {
     super.initState();
@@ -463,7 +465,7 @@ class _CatExamPageState extends State<CatExamPage> {
   }
 
   Widget _statusBar() {
-    final count = _engine.presentedCount + 1;
+    final count = _currentQuestionNumber;
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 10),
@@ -533,6 +535,9 @@ class _CatExamPageState extends State<CatExamPage> {
 
   Widget _answerPanel(CatQuestion question) {
     final document = question.document;
+    final sourceQuestion = document.questionCount > 1
+        ? ' • Câu gốc ${question.childIndex + 1}/${document.questionCount}'
+        : '';
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -545,7 +550,8 @@ class _CatExamPageState extends State<CatExamPage> {
         ),
         const SizedBox(height: 5),
         Text(
-          'Câu ${question.childIndex + 1} trong tài liệu ${document.fileName}',
+          'Câu $_currentQuestionNumber trong bài CAT$sourceQuestion • '
+          '${document.fileName}',
           style: Theme.of(context).textTheme.bodySmall,
         ),
         if (_skill == CatSkill.listening && _audioFile != null) ...[
