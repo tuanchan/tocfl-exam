@@ -22,6 +22,43 @@ class CatQuestion {
 
   String get id => '${document.id}#$childIndex';
   String get correctAnswer => document.answers[childIndex];
+
+  /// Nhóm nội dung dùng để tránh phát liên tiếp quá nhiều câu cùng dạng.
+  /// `sectionName` được ưu tiên vì cùng một dạng có thể mang mã phần khác nhau
+  /// giữa các Band.
+  String get contentCategory {
+    final sectionName = document.sectionName.trim().toLowerCase();
+    final section = sectionName.isEmpty
+        ? 'section-${document.sectionCode}'
+        : sectionName;
+    return '${document.skill}:$section';
+  }
+}
+
+class CatQuestionBlock {
+  CatQuestionBlock(Iterable<CatQuestion> values)
+    : questions = List.unmodifiable(values) {
+    if (questions.isEmpty) {
+      throw ArgumentError.value(values, 'values', 'Cụm câu hỏi CAT rỗng');
+    }
+    final documentId = questions.first.document.id;
+    if (questions.any((question) => question.document.id != documentId)) {
+      throw ArgumentError.value(
+        values,
+        'values',
+        'Một cụm CAT chỉ được chứa câu hỏi của cùng một tài liệu',
+      );
+    }
+  }
+
+  final List<CatQuestion> questions;
+
+  ExamDocument get document => questions.first.document;
+  String get contentCategory => questions.first.contentCategory;
+  int get questionCount => questions.length;
+  double get difficulty =>
+      questions.fold(0.0, (sum, question) => sum + question.difficulty) /
+      questionCount;
 }
 
 class CatAnswerRecord {
@@ -61,7 +98,9 @@ class CatSkillResult {
   final double readingCompletionRatio;
 
   bool get readingPenaltyApplied =>
-      skill == CatSkill.reading && readingCompletionRatio < 1;
+      skill == CatSkill.reading &&
+      answeredCount > 0 &&
+      readingCompletionRatio < 1;
 
   String get reportLevel => CatScoreRules.singleSkillLevel(skill, score);
 }
@@ -186,6 +225,14 @@ abstract final class CatScoreRules {
 }
 
 class CatEngine {
+  static const int minimumQuestionCount = 25;
+  static const int maximumQuestionCount = 40;
+
+  // Chỉ cân bằng dạng câu trong vùng vẫn phù hợp với năng lực hiện tại. Nhờ
+  // vậy content balancing không kéo thí sinh về một câu quá dễ hoặc quá khó.
+  static const double _adaptiveWindow = 70;
+  static const double _randomizationWindow = 14;
+
   CatEngine({
     required this.skill,
     required List<CatQuestion> questions,
@@ -209,25 +256,127 @@ class CatEngine {
   int get presentedCount => answers.length;
   int get answeredCount => answers.where((answer) => answer.answered).length;
   int get correctCount => answers.where((answer) => answer.correct).length;
+  int get remainingQuestionCount => _available.length;
 
-  CatQuestion nextQuestion() {
+  bool hasRecordedAnswer(String questionId) {
+    return answers.any((answer) => answer.question.id == questionId);
+  }
+
+  CatQuestionBlock nextQuestionBlock() {
     if (_available.isEmpty) {
       throw StateError('Kho câu hỏi CAT đã hết.');
     }
 
-    _available.sort(
-      (left, right) => (left.difficulty - ability).abs().compareTo(
-        (right.difficulty - ability).abs(),
-      ),
+    final questionsByDocument = <String, List<CatQuestion>>{};
+    for (final question in _available) {
+      questionsByDocument
+          .putIfAbsent(question.document.id, () => <CatQuestion>[])
+          .add(question);
+    }
+    final remainingCapacity = maximumQuestionCount - presentedCount;
+    final blocks = questionsByDocument.values
+        .where((questions) => questions.length <= remainingCapacity)
+        .map((questions) {
+          questions.sort(
+            (left, right) => left.childIndex.compareTo(right.childIndex),
+          );
+          return CatQuestionBlock(questions);
+        })
+        .toList(growable: false);
+    if (blocks.isEmpty) {
+      throw StateError(
+        'Không còn cụm câu hỏi nào vừa giới hạn $maximumQuestionCount câu.',
+      );
+    }
+
+    double distance(CatQuestionBlock block) =>
+        (block.difficulty - ability).abs();
+
+    blocks.sort((left, right) => distance(left).compareTo(distance(right)));
+
+    // Bước 1: tạo vùng câu hỏi thích ứng quanh năng lực Rasch hiện tại.
+    final nearestDistance = distance(blocks.first);
+    final adaptiveCandidates = blocks
+        .where((block) => distance(block) <= nearestDistance + _adaptiveWindow)
+        .toList(growable: false);
+
+    // Bước 2: trong vùng trên, ưu tiên dạng câu đã xuất hiện ít nhất. Cả Nghe
+    // và Đọc đều dùng cùng nguyên tắc này nhưng có các nhóm section riêng.
+    final exposureByCategory = <String, int>{};
+    for (final answer in answers) {
+      exposureByCategory.update(
+        answer.question.contentCategory,
+        (value) => value + 1,
+        ifAbsent: () => 1,
+      );
+    }
+    final minimumExposure = adaptiveCandidates
+        .map((block) => exposureByCategory[block.contentCategory] ?? 0)
+        .reduce(min);
+    final balancedCandidates =
+        adaptiveCandidates
+            .where(
+              (block) =>
+                  (exposureByCategory[block.contentCategory] ?? 0) ==
+                  minimumExposure,
+            )
+            .toList(growable: false)
+          ..sort((left, right) => distance(left).compareTo(distance(right)));
+
+    // Bước 3: ngẫu nhiên nhẹ giữa các câu gần tương đương để mỗi lượt thi khác
+    // nhau nhưng vẫn không phá vỡ độ khó mà IRT vừa ước lượng.
+    final bestBalancedDistance = distance(balancedCandidates.first);
+    final finalists = balancedCandidates
+        .where(
+          (block) =>
+              distance(block) <= bestBalancedDistance + _randomizationWindow,
+        )
+        .toList(growable: false);
+    final selected = finalists[_random.nextInt(finalists.length)];
+
+    // Một PDF/audio là một cụm ngữ liệu. Phát toàn bộ câu con đúng như Excel
+    // nguồn rồi loại cụm đó khỏi ngân hàng của lượt thi hiện tại.
+    _available.removeWhere(
+      (question) => question.document.id == selected.document.id,
     );
-    final candidateCount = min(18, _available.length);
-    final candidates = _available.take(candidateCount).toList(growable: false);
-    final selected = candidates[_random.nextInt(candidates.length)];
-    _available.remove(selected);
     return selected;
   }
 
+  CatQuestion nextQuestion() => nextQuestionBlock().questions.first;
+
   void recordAnswer(CatQuestion question, String? selectedAnswer) {
+    if (hasRecordedAnswer(question.id)) {
+      throw StateError('Câu hỏi ${question.id} đã được ghi nhận.');
+    }
+    _appendAnswer(question, selectedAnswer);
+  }
+
+  void reviseAnswer(CatQuestion question, String? selectedAnswer) {
+    final answerIndex = answers.indexWhere(
+      (answer) => answer.question.id == question.id,
+    );
+    if (answerIndex == -1) {
+      throw StateError('Câu hỏi ${question.id} chưa được ghi nhận.');
+    }
+
+    final revisedAnswers = <(CatQuestion, String?)>[
+      for (var index = 0; index < answers.length; index++)
+        (
+          answers[index].question,
+          index == answerIndex ? selectedAnswer : answers[index].selectedAnswer,
+        ),
+    ];
+
+    answers.clear();
+    _recentAbilities.clear();
+    ability = 420;
+    standardError = 220;
+    for (final answer in revisedAnswers) {
+      _appendAnswer(answer.$1, answer.$2);
+    }
+  }
+
+  void _appendAnswer(CatQuestion question, String? selectedAnswer) {
     final provisional = CatAnswerRecord(
       question: question,
       selectedAnswer: selectedAnswer,
@@ -249,16 +398,39 @@ class CatEngine {
   }
 
   bool get shouldStop {
-    if (presentedCount >= 40 || _available.isEmpty) return true;
-    if (presentedCount < 25 || _recentAbilities.length < 6) return false;
+    if (presentedCount >= maximumQuestionCount || _available.isEmpty) {
+      return true;
+    }
+    final remainingCapacity = maximumQuestionCount - presentedCount;
+    final remainingDocumentSizes = <String, int>{};
+    for (final question in _available) {
+      remainingDocumentSizes.update(
+        question.document.id,
+        (value) => value + 1,
+        ifAbsent: () => 1,
+      );
+    }
+    if (!remainingDocumentSizes.values.any(
+      (questionCount) => questionCount <= remainingCapacity,
+    )) {
+      return true;
+    }
+    if (presentedCount < minimumQuestionCount || _recentAbilities.length < 6) {
+      return false;
+    }
     final spread = _recentAbilities.reduce(max) - _recentAbilities.reduce(min);
     return standardError <= 24 && spread <= 32;
   }
 
   CatSkillResult result() {
-    final rawScore = ability.round().clamp(0, 700).toInt();
-    final completionRatio = skill == CatSkill.reading && answeredCount < 25
-        ? answeredCount / 25
+    // IRT always has an initial ability estimate, but that estimate is not an
+    // earned score. A skill with no selected answer must therefore score zero.
+    final rawScore = answeredCount == 0
+        ? 0
+        : ability.round().clamp(0, 700).toInt();
+    final completionRatio =
+        skill == CatSkill.reading && answeredCount < minimumQuestionCount
+        ? answeredCount / minimumQuestionCount
         : 1.0;
     final adjustedScore = (rawScore * completionRatio)
         .round()
@@ -333,16 +505,21 @@ List<CatQuestion> buildCatQuestionPool(
         : !document.isListening;
     if (!matchesSkill || document.answers.isEmpty) continue;
 
-    // Mỗi tài liệu chỉ góp một câu cho một lượt CAT. Nhờ vậy người thi không
-    // gặp lại cùng PDF/audio nhiều lần, nhưng câu con được chọn ngẫu nhiên.
-    final childIndex = generator.nextInt(document.answers.length);
-    pool.add(
-      CatQuestion(
-        document: document,
-        childIndex: childIndex,
-        difficulty: _estimatedItemDifficulty(document, childIndex, skill),
-      ),
-    );
+    // Đưa toàn bộ câu con vào ngân hàng. CatEngine sẽ chọn câu phù hợp nhất rồi
+    // loại các câu còn lại của cùng PDF/audio khỏi lượt thi hiện tại.
+    for (
+      var childIndex = 0;
+      childIndex < document.answers.length;
+      childIndex++
+    ) {
+      pool.add(
+        CatQuestion(
+          document: document,
+          childIndex: childIndex,
+          difficulty: _estimatedItemDifficulty(document, childIndex, skill),
+        ),
+      );
+    }
   }
   pool.shuffle(generator);
   return pool;
