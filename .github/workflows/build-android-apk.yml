@@ -285,7 +285,7 @@ jobs:
           )
 
           PACKAGE_LINE="$(grep -m1 "^package:" "$BADGING")"
-          CERTIFICATE_LINE="$(grep -m1 "Signer #1 certificate SHA-256 digest:" "$SIGNATURE_REPORT")"
+          CERTIFICATE_LINE="$(grep -m1 "certificate SHA-256 digest:" "$SIGNATURE_REPORT")"
           {
             echo "APK: $APK_NAME"
             echo "Signing mode: $SIGNING_MODE"
