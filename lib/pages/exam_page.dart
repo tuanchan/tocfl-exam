@@ -38,6 +38,7 @@ class _ExamPageState extends State<ExamPage> {
   final Map<String, String> _selectedAnswers = {};
   final Set<String> _recorded = {};
   final Set<String> _revealedAnswers = {};
+  late final Map<String, int> _displayQuestionNumbers;
   int _documentIndex = 0;
   bool _showTranscript = false;
   bool _analyzing = false;
@@ -62,7 +63,35 @@ class _ExamPageState extends State<ExamPage> {
   @override
   void initState() {
     super.initState();
+    _displayQuestionNumbers = _buildDisplayQuestionNumbers();
     _loadDocumentAssets();
+  }
+
+  Map<String, int> _buildDisplayQuestionNumbers() {
+    final groupedDocumentIndexes = <String, List<int>>{};
+    for (
+      var documentIndex = 0;
+      documentIndex < widget.documents.length;
+      documentIndex++
+    ) {
+      final document = widget.documents[documentIndex];
+      groupedDocumentIndexes
+          .putIfAbsent(document.sectionName, () => <int>[])
+          .add(documentIndex);
+    }
+
+    final numbers = <String, int>{};
+    var displayNumber = 0;
+    for (final documentIndexes in groupedDocumentIndexes.values) {
+      for (final documentIndex in documentIndexes) {
+        final document = widget.documents[documentIndex];
+        for (final childIndex in _questionIndexes(document)) {
+          displayNumber++;
+          numbers['${document.id}#$childIndex'] = displayNumber;
+        }
+      }
+    }
+    return numbers;
   }
 
   Future<void> _loadDocumentAssets() async {
@@ -599,7 +628,7 @@ class _ExamPageState extends State<ExamPage> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               _Study4QuestionBadge(
-                number: index + 1,
+                number: _displayQuestionNumbers[id] ?? index + 1,
                 answered: selected != null,
                 submitted: submitted,
                 correct: submitted && selected == expected,
