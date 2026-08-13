@@ -1,0 +1,318 @@
+name: Build installable Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build-android-apk.yml"
+      - "android/**"
+      - "assets/**"
+      - "lib/**"
+      - "test/**"
+      - "analysis_options.yaml"
+      - "pubspec.yaml"
+      - "pubspec.lock"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build-android-apk.yml"
+      - "android/**"
+      - "assets/**"
+      - "lib/**"
+      - "test/**"
+      - "analysis_options.yaml"
+      - "pubspec.yaml"
+      - "pubspec.lock"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FLUTTER_PROJECT: .
+  APK_SOURCE: build/app/outputs/flutter-apk/app-release.apk
+  PUBLIC_DATA_ROOT: https://tocfl-data.anhtuan1811006.workers.dev/tai_lieu_tocfl
+
+jobs:
+  build-android-apk:
+    name: Verify and build universal APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v7
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Set up Flutter stable
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.44.4"
+          channel: stable
+          cache: true
+          pub-cache: true
+
+      - name: Show tool versions
+        run: |
+          java -version
+          flutter --version
+          dart --version
+
+      - name: Install locked Dart dependencies
+        working-directory: ${{ env.FLUTTER_PROJECT }}
+        run: flutter pub get --enforce-lockfile
+
+      - name: Analyze Dart and Flutter code
+        working-directory: ${{ env.FLUTTER_PROJECT }}
+        run: flutter analyze --fatal-infos --fatal-warnings
+
+      - name: Run automated tests
+        working-directory: ${{ env.FLUTTER_PROJECT }}
+        run: flutter test --reporter expanded
+
+      - name: Verify public TOCFL data source
+        id: data_source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CATALOG_FILE="$RUNNER_TEMP/tocfl_catalog.json"
+          curl --fail --location --retry 3 --retry-all-errors \
+            --connect-timeout 20 --max-time 180 \
+            "$PUBLIC_DATA_ROOT/tocfl_catalog.json" \
+            --output "$CATALOG_FILE"
+
+          python3 - "$CATALOG_FILE" "$PUBLIC_DATA_ROOT" "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import pathlib
+          import sys
+          import urllib.parse
+
+          catalog_path = pathlib.Path(sys.argv[1])
+          public_root = sys.argv[2].rstrip("/")
+          output_path = pathlib.Path(sys.argv[3])
+          catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+          items = catalog.get("items")
+          if not isinstance(items, list) or not items:
+              raise SystemExit("Catalog does not contain a non-empty items list.")
+
+          listening = [item for item in items if item.get("skill") == "listening"]
+          reading = [item for item in items if item.get("skill") == "reading"]
+          if not listening or not reading:
+              raise SystemExit("Catalog must contain both listening and reading items.")
+
+          invalid = [
+              item.get("id", "<missing-id>")
+              for item in items
+              if not item.get("pdfPath") or not item.get("answers")
+          ]
+          if invalid:
+              raise SystemExit(
+                  f"Catalog has {len(invalid)} item(s) without PDF or answers; "
+                  f"first: {invalid[0]}"
+              )
+
+          audio_item = next((item for item in listening if item.get("audioPath")), None)
+          if audio_item is None:
+              raise SystemExit("Catalog does not contain a listening audio path.")
+
+          def public_url(relative_path: str) -> str:
+              encoded = urllib.parse.quote(relative_path, safe="/")
+              return f"{public_root}/{encoded}"
+
+          sample_pdf_url = public_url(reading[0]["pdfPath"])
+          sample_audio_url = public_url(audio_item["audioPath"])
+          with output_path.open("a", encoding="utf-8") as output:
+              output.write(f"item_count={len(items)}\n")
+              output.write(f"listening_count={len(listening)}\n")
+              output.write(f"reading_count={len(reading)}\n")
+              output.write(f"sample_pdf_url={sample_pdf_url}\n")
+              output.write(f"sample_audio_url={sample_audio_url}\n")
+          PY
+
+      - name: Verify streamed PDF and audio samples
+        shell: bash
+        env:
+          SAMPLE_PDF_URL: ${{ steps.data_source.outputs.sample_pdf_url }}
+          SAMPLE_AUDIO_URL: ${{ steps.data_source.outputs.sample_audio_url }}
+          CATALOG_ITEM_COUNT: ${{ steps.data_source.outputs.item_count }}
+          LISTENING_DOCUMENT_COUNT: ${{ steps.data_source.outputs.listening_count }}
+          READING_DOCUMENT_COUNT: ${{ steps.data_source.outputs.reading_count }}
+        run: |
+          set -euo pipefail
+
+          for sample_url in \
+            "$SAMPLE_PDF_URL" \
+            "$SAMPLE_AUDIO_URL"; do
+            curl --fail --location --retry 3 --retry-all-errors \
+              --connect-timeout 20 --max-time 180 --range 0-1023 \
+              "$sample_url" --output /dev/null
+          done
+
+          {
+            echo "### Public TOCFL data verified"
+            echo "- Catalog items: $CATALOG_ITEM_COUNT"
+            echo "- Listening documents: $LISTENING_DOCUMENT_COUNT"
+            echo "- Reading documents: $READING_DOCUMENT_COUNT"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Prepare optional persistent release signing
+        id: signing
+        shell: bash
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          RELEASE_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          VALUES=(
+            "$RELEASE_KEYSTORE_BASE64"
+            "$RELEASE_KEYSTORE_PASSWORD"
+            "$RELEASE_KEY_ALIAS"
+            "$RELEASE_KEY_PASSWORD"
+          )
+          PRESENT=0
+          for value in "${VALUES[@]}"; do
+            if [[ -n "$value" ]]; then
+              PRESENT=$((PRESENT + 1))
+            fi
+          done
+
+          if [[ "$PRESENT" -eq 0 ]]; then
+            echo "mode=debug" >> "$GITHUB_OUTPUT"
+            echo "keystore_path=" >> "$GITHUB_OUTPUT"
+            echo "### APK signing: temporary debug key" >> "$GITHUB_STEP_SUMMARY"
+            echo "The APK is installable, but configure all four Android signing secrets for stable in-place updates." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          if [[ "$PRESENT" -ne 4 ]]; then
+            echo "::error::Android signing is only partially configured. Add all four ANDROID_* signing secrets or remove all of them."
+            exit 1
+          fi
+
+          KEYSTORE_PATH="$RUNNER_TEMP/tocfl-release.jks"
+          printf '%s' "$RELEASE_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
+          test -s "$KEYSTORE_PATH"
+          keytool -list \
+            -keystore "$KEYSTORE_PATH" \
+            -storepass "$RELEASE_KEYSTORE_PASSWORD" \
+            -alias "$RELEASE_KEY_ALIAS" >/dev/null
+
+          echo "mode=release" >> "$GITHUB_OUTPUT"
+          echo "keystore_path=$KEYSTORE_PATH" >> "$GITHUB_OUTPUT"
+          echo "### APK signing: persistent release key" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build universal release APK
+        working-directory: ${{ env.FLUTTER_PROJECT }}
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ steps.signing.outputs.keystore_path }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: >-
+          flutter build apk
+          --release
+          --target-platform android-arm,android-arm64,android-x64
+          --build-number "${{ github.run_number }}"
+
+      - name: Inspect and package APK
+        id: package
+        shell: bash
+        working-directory: ${{ env.FLUTTER_PROJECT }}
+        env:
+          SIGNING_MODE: ${{ steps.signing.outputs.mode }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! -s "$APK_SOURCE" ]]; then
+            echo "::error::$APK_SOURCE was not created or is empty."
+            exit 1
+          fi
+
+          BUILD_TOOLS_DIR="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d -print | sort -V | tail -n 1)"
+          AAPT="$BUILD_TOOLS_DIR/aapt"
+          APKSIGNER="$BUILD_TOOLS_DIR/apksigner"
+          test -x "$AAPT"
+          test -x "$APKSIGNER"
+
+          unzip -t "$APK_SOURCE" >/dev/null
+          SIGNATURE_REPORT="$RUNNER_TEMP/apk-signature.txt"
+          "$APKSIGNER" verify --verbose --print-certs "$APK_SOURCE" | tee "$SIGNATURE_REPORT"
+
+          BADGING="$RUNNER_TEMP/apk-badging.txt"
+          PERMISSIONS="$RUNNER_TEMP/apk-permissions.txt"
+          "$AAPT" dump badging "$APK_SOURCE" | tee "$BADGING"
+          "$AAPT" dump permissions "$APK_SOURCE" | tee "$PERMISSIONS"
+
+          grep -q "package: name='com.example.fluttertocflexam'" "$BADGING"
+          grep -q "launchable-activity:" "$BADGING"
+          grep -q "sdkVersion:'24'" "$BADGING"
+          grep -q "android.permission.INTERNET" "$PERMISSIONS"
+          if grep -q "^application-debuggable" "$BADGING"; then
+            echo "::error::Release APK is unexpectedly marked debuggable."
+            exit 1
+          fi
+          APK_ENTRIES="$RUNNER_TEMP/apk-entries.txt"
+          unzip -Z1 "$APK_SOURCE" > "$APK_ENTRIES"
+          for abi in armeabi-v7a arm64-v8a x86_64; do
+            grep -q "^lib/$abi/libflutter.so$" "$APK_ENTRIES"
+          done
+
+          SHORT_SHA="${GITHUB_SHA:0:7}"
+          OUTPUT_DIR="$PWD/build/installable-apk"
+          APK_NAME="TOCFL-Full-Exam-${GITHUB_RUN_NUMBER}-${SHORT_SHA}-${SIGNING_MODE}.apk"
+          APK_PATH="$OUTPUT_DIR/$APK_NAME"
+          mkdir -p "$OUTPUT_DIR"
+          cp "$APK_SOURCE" "$APK_PATH"
+          (
+            cd "$OUTPUT_DIR"
+            sha256sum "$APK_NAME" > "$APK_NAME.sha256"
+          )
+
+          PACKAGE_LINE="$(grep -m1 "^package:" "$BADGING")"
+          CERTIFICATE_LINE="$(grep -m1 "Signer #1 certificate SHA-256 digest:" "$SIGNATURE_REPORT")"
+          {
+            echo "APK: $APK_NAME"
+            echo "Signing mode: $SIGNING_MODE"
+            echo "$PACKAGE_LINE"
+            echo "$CERTIFICATE_LINE"
+            echo "Supported ABI: armeabi-v7a, arm64-v8a, x86_64"
+            echo "Minimum Android API: 24 (Android 7.0)"
+            echo "Source commit: $GITHUB_SHA"
+          } > "$OUTPUT_DIR/BUILD-INFO.txt"
+
+          echo "artifact_name=TOCFL-Full-Exam-Android-${GITHUB_RUN_NUMBER}-${SIGNING_MODE}" >> "$GITHUB_OUTPUT"
+          echo "artifact_path=$OUTPUT_DIR" >> "$GITHUB_OUTPUT"
+          echo "apk_name=$APK_NAME" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Installable Android APK created"
+            echo "- File: \`$APK_NAME\`"
+            echo "- Signing: \`$SIGNING_MODE\`"
+            echo "- Architectures: \`armeabi-v7a, arm64-v8a, x86_64\`"
+            echo "- Minimum Android: \`7.0 (API 24)\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload installable APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.package.outputs.artifact_name }}
+          path: ${{ steps.package.outputs.artifact_path }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30

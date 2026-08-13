@@ -5,6 +5,7 @@ import '../models/tocfl_models.dart';
 import '../services/catalog_service.dart';
 import '../services/progress_store.dart';
 import '../services/settings_store.dart';
+import 'cat_exam_page.dart';
 import 'download_page.dart';
 import 'exam_page.dart';
 import 'settings_page.dart';
@@ -31,6 +32,7 @@ class _AppShellState extends State<AppShell> {
   static const _tabNames = <String>[
     'Bài học',
     'Tạo đề',
+    'Thi CAT',
     'Ôn SRS',
     'Thống kê',
     'Tải đề',
@@ -140,9 +142,9 @@ class _AppShellState extends State<AppShell> {
                   : const SizedBox.shrink(),
             ),
             Expanded(
-              child: _error != null && _tab != 5 && _tab != 6
+              child: _error != null && _tab != 6 && _tab != 7
                   ? _ErrorView(message: _error!, retry: _load)
-                  : catalog == null && _tab != 5 && _tab != 6
+                  : catalog == null && _tab != 6 && _tab != 7
                   ? const Center(child: CircularProgressIndicator())
                   : _page(
                       catalog ?? const TocflCatalog(generatedAt: '', items: []),
@@ -171,19 +173,14 @@ class _AppShellState extends State<AppShell> {
                     ? Theme.of(context).brightness == Brightness.dark
                           ? AppColors.attemptedYellow
                           : AppColors.darkBlue
-                    : index == 5
+                    : index == 6
                     ? AppColors.red
                     : AppColors.blue,
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 7,
-                  vertical: 5,
-                ),
+                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 5),
                 minimumSize: const Size(0, 30),
                 tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                 textStyle: TextStyle(
-                  fontWeight: _tab == index
-                      ? FontWeight.w900
-                      : FontWeight.w700,
+                  fontWeight: _tab == index ? FontWeight.w900 : FontWeight.w700,
                 ),
               ),
               child: Text(_tabNames[index]),
@@ -200,6 +197,8 @@ class _AppShellState extends State<AppShell> {
       case 1:
         return TestBuilderPage(catalog: catalog, openExam: _openExam);
       case 2:
+        return CatHomePage(catalog: catalog, settings: widget.settings);
+      case 3:
         final due = _progress.dueQuestionIds(DateTime.now()).toSet();
         final documents = catalog.items
             .where((document) {
@@ -221,15 +220,15 @@ class _AppShellState extends State<AppShell> {
           questionIds: availableDue,
           openExam: _openExam,
         );
-      case 3:
-        return StatisticsPage(progress: _progress, catalog: catalog);
       case 4:
+        return StatisticsPage(progress: _progress, catalog: catalog);
+      case 5:
         return DownloadPage(
           settings: widget.settings,
           catalog: catalog,
           reloadCatalog: _load,
         );
-      case 5:
+      case 6:
         return SettingsPage(settings: widget.settings, reloadCatalog: _load);
       default:
         return VocabularyPage(settings: widget.settings);
