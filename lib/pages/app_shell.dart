@@ -229,7 +229,7 @@ class _AppShellState extends State<AppShell> {
           reloadCatalog: _load,
         );
       case 6:
-        return SettingsPage(settings: widget.settings, reloadCatalog: _load);
+        return SettingsPage(settings: widget.settings);
       default:
         return VocabularyPage(settings: widget.settings);
     }

@@ -46,26 +46,52 @@ class _TestBuilderPageState extends State<TestBuilderPage> {
   }
 
   Future<void> _loadSavedTests() async {
-    final tests = await _testStore.load();
-    if (!mounted) return;
-    setState(() {
-      _savedTests = tests;
-      _loadingSavedTests = false;
-    });
+    try {
+      final tests = await _testStore.load();
+      final preferences = await _testStore.loadBuilderPreferences();
+      if (!mounted) return;
+      setState(() {
+        _savedTests = tests;
+        _levels
+          ..clear()
+          ..addAll(preferences.levels);
+        _listening = preferences.listening;
+        _reading = preferences.reading;
+        _random = preferences.random;
+        _questionCount = preferences.questionCount;
+      });
+    } finally {
+      if (mounted) setState(() => _loadingSavedTests = false);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final available = _availableQuestions();
     final availableCount = available.length;
+    final questionUsage = _questionUsage();
+    final usedQuestionIds = questionUsage.keys.toSet();
+    final unusedAvailableCount = available
+        .where((question) => !usedQuestionIds.contains(question.id))
+        .length;
+    final usedAvailableCount = availableCount - unusedAvailableCount;
     final selectedManualCount = _manualQuestionIds == null
         ? 0
         : available
               .where((question) => _manualQuestionIds!.contains(question.id))
               .length;
-    final effectiveQuestionCount = availableCount == 0
+    final selectedUsedCount = _manualQuestionIds == null
         ? 0
-        : _questionCount.clamp(1, availableCount).toInt();
+        : available
+              .where(
+                (question) =>
+                    _manualQuestionIds!.contains(question.id) &&
+                    usedQuestionIds.contains(question.id),
+              )
+              .length;
+    final effectiveQuestionCount = unusedAvailableCount == 0
+        ? 0
+        : _questionCount.clamp(1, unusedAvailableCount).toInt();
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
@@ -133,18 +159,34 @@ class _TestBuilderPageState extends State<TestBuilderPage> {
               Text(
                 'Có $availableCount câu phù hợp với cấp và kỹ năng đã chọn.',
               ),
+              if (_loadingSavedTests)
+                const Padding(
+                  padding: EdgeInsets.only(top: 6),
+                  child: Text('Đang đối chiếu với các đề đã tạo...'),
+                )
+              else
+                Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Text(
+                    '$unusedAvailableCount câu chưa dùng • '
+                    '$usedAvailableCount câu đã có trong đề trước.',
+                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                ),
               const SizedBox(height: 10),
               if (_manualQuestionIds == null) ...[
                 Text(
-                  'Số câu hỏi trong đề: $effectiveQuestionCount',
+                  'Số câu chưa dùng trong đề mới: $effectiveQuestionCount',
                   style: const TextStyle(fontWeight: FontWeight.w900),
                 ),
                 Slider(
                   value: effectiveQuestionCount.toDouble(),
-                  min: availableCount == 0 ? 0 : 1,
-                  max: availableCount == 0 ? 1 : availableCount.toDouble(),
+                  min: unusedAvailableCount == 0 ? 0 : 1,
+                  max: unusedAvailableCount == 0
+                      ? 1
+                      : unusedAvailableCount.toDouble(),
                   label: '$effectiveQuestionCount câu',
-                  onChanged: availableCount == 0
+                  onChanged: unusedAvailableCount == 0 || _loadingSavedTests
                       ? null
                       : (value) => setState(() {
                           _questionCount = value.round();
@@ -152,7 +194,8 @@ class _TestBuilderPageState extends State<TestBuilderPage> {
                 ),
               ] else ...[
                 Text(
-                  'Đã chọn thủ công: $selectedManualCount câu',
+                  'Đã chọn thủ công: $selectedManualCount câu'
+                  '${selectedUsedCount == 0 ? '' : ' • $selectedUsedCount câu đã dùng'}',
                   style: const TextStyle(fontWeight: FontWeight.w900),
                 ),
                 const SizedBox(height: 10),
@@ -167,9 +210,9 @@ class _TestBuilderPageState extends State<TestBuilderPage> {
                         : 'Sửa danh sách câu',
                     compact: true,
                     selected: _manualQuestionIds != null,
-                    onPressed: availableCount == 0
+                    onPressed: availableCount == 0 || _loadingSavedTests
                         ? null
-                        : () => _pickQuestions(available),
+                        : () => _pickQuestions(available, questionUsage),
                   ),
                   if (_manualQuestionIds != null)
                     AppTextButton(
@@ -199,7 +242,7 @@ class _TestBuilderPageState extends State<TestBuilderPage> {
               AppTextButton(
                 label: 'Tạo đề và bắt đầu',
                 expand: true,
-                onPressed: _start,
+                onPressed: _loadingSavedTests ? null : _start,
               ),
             ],
           ),
@@ -296,12 +339,26 @@ class _TestBuilderPageState extends State<TestBuilderPage> {
     return result;
   }
 
-  Future<void> _pickQuestions(List<_QuestionRef> available) async {
+  Map<String, List<SavedPracticeTest>> _questionUsage() {
+    final usage = <String, List<SavedPracticeTest>>{};
+    for (final test in _savedTests) {
+      for (final questionId in test.questionIds.toSet()) {
+        (usage[questionId] ??= []).add(test);
+      }
+    }
+    return usage;
+  }
+
+  Future<void> _pickQuestions(
+    List<_QuestionRef> available,
+    Map<String, List<SavedPracticeTest>> questionUsage,
+  ) async {
     final availableIds = available.map((question) => question.id).toSet();
     final selected = await showDialog<Set<String>>(
       context: context,
       builder: (_) => _QuestionPickerDialog(
         questions: available,
+        usageByQuestion: questionUsage,
         initialSelection:
             _manualQuestionIds?.intersection(availableIds) ?? const {},
       ),
@@ -326,6 +383,18 @@ class _TestBuilderPageState extends State<TestBuilderPage> {
           .where((question) => _manualQuestionIds!.contains(question.id))
           .toList();
     } else {
+      final usedQuestionIds = _questionUsage().keys;
+      questions = questions
+          .where((question) => !usedQuestionIds.contains(question.id))
+          .toList();
+      if (questions.isEmpty) {
+        AppToast.show(
+          context,
+          'Tất cả câu phù hợp đã có trong đề trước. Hãy chọn từng câu nếu bạn muốn dùng lại.',
+          tone: AppToastTone.warning,
+        );
+        return;
+      }
       if (_random) questions.shuffle(Random.secure());
       questions = questions
           .take(_questionCount.clamp(1, questions.length).toInt())
@@ -355,16 +424,27 @@ class _TestBuilderPageState extends State<TestBuilderPage> {
       createdAt: now,
       questionIds: questions.map((question) => question.id).toList(),
     );
+    final builderPreferences = TestBuilderPreferences(
+      levels: (_levels.toList()..sort()),
+      listening: _listening,
+      reading: _reading,
+      random: _random,
+      questionCount: _questionCount,
+    );
     try {
+      await _testStore.saveBuilderPreferences(builderPreferences);
       final tests = await _testStore.save(savedTest);
       if (!mounted) return;
       _testNameController.clear();
-      setState(() => _savedTests = tests);
+      setState(() {
+        _savedTests = tests;
+        _manualQuestionIds = null;
+      });
     } catch (error) {
       if (!mounted) return;
       AppToast.show(
         context,
-        'Không lưu được đề: $error',
+        'Không lưu được đề hoặc cài đặt tạo đề: $error',
         tone: AppToastTone.error,
       );
       return;
@@ -528,10 +608,12 @@ class _QuestionPickerDialog extends StatefulWidget {
   const _QuestionPickerDialog({
     required this.questions,
     required this.initialSelection,
+    required this.usageByQuestion,
   });
 
   final List<_QuestionRef> questions;
   final Set<String> initialSelection;
+  final Map<String, List<SavedPracticeTest>> usageByQuestion;
 
   @override
   State<_QuestionPickerDialog> createState() => _QuestionPickerDialogState();
@@ -541,6 +623,7 @@ class _QuestionPickerDialogState extends State<_QuestionPickerDialog> {
   late final Set<String> _selected;
   final TextEditingController _search = TextEditingController();
   String _query = '';
+  bool _onlyUnused = true;
 
   @override
   void initState() {
@@ -556,9 +639,10 @@ class _QuestionPickerDialogState extends State<_QuestionPickerDialog> {
 
   List<_QuestionRef> get _visible {
     final query = _query.trim().toLowerCase();
-    if (query.isEmpty) return widget.questions;
     return widget.questions
         .where((question) {
+          if (_onlyUnused && _wasUsed(question.id)) return false;
+          if (query.isEmpty) return true;
           final document = question.document;
           return document.fileName.toLowerCase().contains(query) ||
               document.sectionName.toLowerCase().contains(query) ||
@@ -568,9 +652,63 @@ class _QuestionPickerDialogState extends State<_QuestionPickerDialog> {
         .toList(growable: false);
   }
 
+  bool _wasUsed(String questionId) =>
+      widget.usageByQuestion[questionId]?.isNotEmpty == true;
+
+  String _usageLabel(List<SavedPracticeTest> tests) {
+    const shownNameCount = 3;
+    final names = tests
+        .take(shownNameCount)
+        .map((test) => test.name)
+        .join(', ');
+    final remaining = tests.length - shownNameCount;
+    return 'Đã dùng trong: $names${remaining > 0 ? ' và $remaining đề khác' : ''}';
+  }
+
+  Future<void> _setQuestionSelected(
+    _QuestionRef question,
+    bool selected,
+  ) async {
+    if (!selected) {
+      setState(() => _selected.remove(question.id));
+      return;
+    }
+    final usedIn = widget.usageByQuestion[question.id] ?? const [];
+    if (usedIn.isNotEmpty) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Câu này đã được dùng'),
+          content: Text(
+            '${_usageLabel(usedIn)}.\n\nBạn vẫn muốn chọn lại câu này?',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Không chọn'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('Vẫn chọn'),
+            ),
+          ],
+        ),
+      );
+      if (!mounted || confirmed != true) return;
+    }
+    setState(() => _selected.add(question.id));
+  }
+
   @override
   Widget build(BuildContext context) {
     final visible = _visible;
+    final usedCount = widget.questions
+        .where((question) => _wasUsed(question.id))
+        .length;
+    final unusedCount = widget.questions.length - usedCount;
+    final visibleUnused = visible
+        .where((question) => !_wasUsed(question.id))
+        .toList(growable: false);
     return Dialog(
       insetPadding: const EdgeInsets.all(16),
       child: ConstrainedBox(
@@ -609,55 +747,120 @@ class _QuestionPickerDialogState extends State<_QuestionPickerDialog> {
               ),
             ),
             Padding(
+              padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  '$unusedCount câu chưa dùng • $usedCount câu đã dùng',
+                  style: const TextStyle(fontWeight: FontWeight.w700),
+                ),
+              ),
+            ),
+            Padding(
               padding: const EdgeInsets.all(12),
-              child: Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  AppTextButton(
-                    label: 'Chọn ${visible.length} câu đang hiện',
-                    compact: true,
-                    onPressed: () => setState(
-                      () => _selected.addAll(
-                        visible.map((question) => question.id),
-                      ),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    AppTextButton(
+                      label: 'Chỉ hiện câu chưa dùng',
+                      compact: true,
+                      selected: _onlyUnused,
+                      onPressed: () =>
+                          setState(() => _onlyUnused = !_onlyUnused),
                     ),
-                  ),
-                  AppTextButton(
-                    label: 'Bỏ chọn tất cả',
-                    compact: true,
-                    danger: true,
-                    onPressed: () => setState(_selected.clear),
-                  ),
-                ],
+                    AppTextButton(
+                      label:
+                          'Chọn ${visibleUnused.length} câu chưa dùng đang hiện',
+                      compact: true,
+                      onPressed: visibleUnused.isEmpty
+                          ? null
+                          : () => setState(
+                              () => _selected.addAll(
+                                visibleUnused.map((question) => question.id),
+                              ),
+                            ),
+                    ),
+                    AppTextButton(
+                      label: 'Bỏ chọn tất cả',
+                      compact: true,
+                      danger: true,
+                      onPressed: () => setState(_selected.clear),
+                    ),
+                  ],
+                ),
               ),
             ),
             const Divider(height: 1),
             Expanded(
-              child: ListView.builder(
-                itemCount: visible.length,
-                itemBuilder: (context, index) {
-                  final question = visible[index];
-                  final checked = _selected.contains(question.id);
-                  return CheckboxListTile(
-                    value: checked,
-                    controlAffinity: ListTileControlAffinity.leading,
-                    title: Text(
-                      '${question.document.fileName} • Câu ${question.childIndex + 1}',
+              child: visible.isEmpty
+                  ? Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(24),
+                        child: Text(
+                          _onlyUnused && unusedCount == 0
+                              ? 'Không còn câu chưa dùng. Tắt bộ lọc để xem các câu đã có trong đề trước.'
+                              : 'Không tìm thấy câu phù hợp.',
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                    )
+                  : ListView.builder(
+                      itemCount: visible.length,
+                      itemBuilder: (context, index) {
+                        final question = visible[index];
+                        final checked = _selected.contains(question.id);
+                        final usedIn =
+                            widget.usageByQuestion[question.id] ?? const [];
+                        final wasUsed = usedIn.isNotEmpty;
+                        return CheckboxListTile(
+                          value: checked,
+                          controlAffinity: ListTileControlAffinity.leading,
+                          title: Text(
+                            '${question.document.fileName} • Câu ${question.childIndex + 1}',
+                          ),
+                          subtitle: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Cấp ${question.document.levelCode} • '
+                                '${question.document.isListening ? 'Nghe' : 'Đọc'} • '
+                                '${question.document.sectionName}',
+                              ),
+                              const SizedBox(height: 3),
+                              Text(
+                                wasUsed
+                                    ? _usageLabel(usedIn)
+                                    : 'Chưa dùng trong đề nào',
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  color: wasUsed
+                                      ? AppColors.red
+                                      : const Color(0xFF168445),
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                            ],
+                          ),
+                          secondary: Icon(
+                            wasUsed
+                                ? Icons.history_rounded
+                                : Icons.fiber_new_rounded,
+                            color: wasUsed
+                                ? AppColors.red
+                                : const Color(0xFF168445),
+                          ),
+                          tileColor: wasUsed
+                              ? AppColors.red.withValues(alpha: 0.06)
+                              : null,
+                          onChanged: (value) =>
+                              _setQuestionSelected(question, value == true),
+                        );
+                      },
                     ),
-                    subtitle: Text(
-                      'Cấp ${question.document.levelCode} • '
-                      '${question.document.isListening ? 'Nghe' : 'Đọc'} • '
-                      '${question.document.sectionName}',
-                    ),
-                    onChanged: (value) => setState(() {
-                      value == true
-                          ? _selected.add(question.id)
-                          : _selected.remove(question.id);
-                    }),
-                  );
-                },
-              ),
             ),
             const Divider(height: 1),
             Padding(

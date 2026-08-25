@@ -7,6 +7,24 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/tocfl_models.dart';
 
+class VocabularyFileInfo {
+  const VocabularyFileInfo({
+    required this.filename,
+    required this.path,
+    required this.wordCount,
+    required this.sizeInBytes,
+    required this.modifiedAt,
+    required this.exists,
+  });
+
+  final String filename;
+  final String path;
+  final int wordCount;
+  final int sizeInBytes;
+  final DateTime? modifiedAt;
+  final bool exists;
+}
+
 class VocabularyStore {
   static const defaultFilename = 'vocab.txt';
   static const geminiFilename = 'gemini_vocabulary.txt';
@@ -49,16 +67,45 @@ class VocabularyStore {
     return names;
   }
 
+  Future<List<VocabularyFileInfo>> listFileInfos() async {
+    final filenames = await listFiles();
+    return Future.wait(filenames.map(fileInfo));
+  }
+
+  Future<VocabularyFileInfo> fileInfo(String filename) async {
+    final cleanFilename = normalizeFilename(filename);
+    final path = await filePath(cleanFilename);
+    final file = File(path);
+    final exists = await file.exists();
+    if (!exists) {
+      return VocabularyFileInfo(
+        filename: cleanFilename,
+        path: path,
+        wordCount: 0,
+        sizeInBytes: 0,
+        modifiedAt: null,
+        exists: false,
+      );
+    }
+    final stat = await file.stat();
+    final lines = await readLines(cleanFilename);
+    return VocabularyFileInfo(
+      filename: cleanFilename,
+      path: path,
+      wordCount: lines.length,
+      sizeInBytes: stat.size,
+      modifiedAt: stat.modified,
+      exists: true,
+    );
+  }
+
   Future<String> lastFilename() async {
     final saved = await _preferences.getString(_lastFilenameKey);
     return normalizeFilename(saved ?? defaultFilename);
   }
 
   Future<void> selectFile(String filename) async {
-    await _preferences.setString(
-      _lastFilenameKey,
-      normalizeFilename(filename),
-    );
+    await _preferences.setString(_lastFilenameKey, normalizeFilename(filename));
   }
 
   Future<String> createFile(String filename) async {
@@ -67,7 +114,8 @@ class VocabularyStore {
     var actualFilename = cleanFilename;
     await for (final entity in folder.list()) {
       if (entity is File &&
-          p.basename(entity.path).toLowerCase() == cleanFilename.toLowerCase()) {
+          p.basename(entity.path).toLowerCase() ==
+              cleanFilename.toLowerCase()) {
         actualFilename = p.basename(entity.path);
         break;
       }

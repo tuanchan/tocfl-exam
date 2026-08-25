@@ -4,6 +4,7 @@ abstract final class AppColors {
   static const red = Color(0xFFC62828);
   static const blue = Color(0xFF1557B0);
   static const white = Color(0xFFFFFFFF);
+  static const black = Color(0xFF000000);
   static const darkBlue = Color(0xFF071A35);
   static const attemptedYellow = Color(0xFFFFD54F);
 }
@@ -14,7 +15,7 @@ abstract final class AppTheme {
 
   static ThemeData _create(Brightness brightness) {
     final dark = brightness == Brightness.dark;
-    final background = dark ? AppColors.darkBlue : AppColors.white;
+    final background = dark ? AppColors.black : AppColors.white;
     final foreground = dark ? AppColors.white : AppColors.darkBlue;
     return ThemeData(
       useMaterial3: true,

@@ -45,8 +45,71 @@ class SavedPracticeTest {
   };
 }
 
+class TestBuilderPreferences {
+  const TestBuilderPreferences({
+    required this.levels,
+    required this.listening,
+    required this.reading,
+    required this.random,
+    required this.questionCount,
+  });
+
+  static const defaults = TestBuilderPreferences(
+    levels: ['01'],
+    listening: true,
+    reading: true,
+    random: false,
+    questionCount: 20,
+  );
+
+  final List<String> levels;
+  final bool listening;
+  final bool reading;
+  final bool random;
+  final int questionCount;
+
+  factory TestBuilderPreferences.fromJson(Map<String, dynamic> json) {
+    const allowedLevels = {'01', '02', '03', '04'};
+    final savedLevels =
+        (json['levels'] as List<dynamic>? ?? const [])
+            .map((value) => value.toString())
+            .where(allowedLevels.contains)
+            .toSet()
+            .toList()
+          ..sort();
+    final listening = json['listening'] is bool
+        ? json['listening'] as bool
+        : defaults.listening;
+    final reading = json['reading'] is bool
+        ? json['reading'] as bool
+        : defaults.reading;
+    final savedQuestionCount = int.tryParse(
+      json['questionCount']?.toString() ?? '',
+    );
+    return TestBuilderPreferences(
+      levels: savedLevels.isEmpty ? defaults.levels : savedLevels,
+      listening: !listening && !reading ? defaults.listening : listening,
+      reading: !listening && !reading ? defaults.reading : reading,
+      random: json['random'] is bool ? json['random'] as bool : defaults.random,
+      questionCount: (savedQuestionCount ?? defaults.questionCount).clamp(
+        1,
+        10000,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'levels': levels,
+    'listening': listening,
+    'reading': reading,
+    'random': random,
+    'questionCount': questionCount,
+  };
+}
+
 class CreatedTestStore {
   static const _storageKey = 'practiceTests.saved.v1';
+  static const _builderPreferencesKey = 'practiceTests.builderPreferences.v1';
 
   final SharedPreferencesAsync _preferences = SharedPreferencesAsync();
 
@@ -64,6 +127,31 @@ class CreatedTestStore {
     } catch (_) {
       return const [];
     }
+  }
+
+  Future<TestBuilderPreferences> loadBuilderPreferences() async {
+    final source = await _preferences.getString(_builderPreferencesKey);
+    if (source == null || source.trim().isEmpty) {
+      return TestBuilderPreferences.defaults;
+    }
+    try {
+      final json = jsonDecode(source);
+      if (json is! Map<String, dynamic>) {
+        return TestBuilderPreferences.defaults;
+      }
+      return TestBuilderPreferences.fromJson(json);
+    } catch (_) {
+      return TestBuilderPreferences.defaults;
+    }
+  }
+
+  Future<void> saveBuilderPreferences(
+    TestBuilderPreferences preferences,
+  ) async {
+    await _preferences.setString(
+      _builderPreferencesKey,
+      jsonEncode(preferences.toJson()),
+    );
   }
 
   Future<List<SavedPracticeTest>> save(SavedPracticeTest test) async {

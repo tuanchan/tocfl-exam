@@ -662,11 +662,7 @@ class _ExamPageState extends State<ExamPage> {
       }
     } catch (error) {
       if (mounted) {
-        AppToast.show(
-          context,
-          'Gemini lỗi: $error',
-          tone: AppToastTone.error,
-        );
+        AppToast.show(context, 'Gemini lỗi: $error', tone: AppToastTone.error);
       }
     } finally {
       if (mounted) setState(() => _analyzing = false);
@@ -1205,9 +1201,7 @@ class _RemotePdfViewerState extends State<_RemotePdfViewer> {
         );
       }
       final builder = BytesBuilder(copy: false);
-      await response
-          .forEach(builder.add)
-          .timeout(const Duration(seconds: 90));
+      await response.forEach(builder.add).timeout(const Duration(seconds: 90));
       final bytes = builder.takeBytes();
       if (bytes.isEmpty) {
         throw HttpException('PDF không có dữ liệu', uri: widget.uri);
@@ -1252,6 +1246,8 @@ class _AudioControlState extends State<AudioControl> {
   final AudioPlayer _player = AudioPlayer();
   double _speed = 1;
   bool _muted = false;
+  double? _dragPositionMilliseconds;
+  int _dragSession = 0;
   String? _error;
 
   @override
@@ -1319,6 +1315,12 @@ class _AudioControlState extends State<AudioControl> {
                 final value = position.inMilliseconds
                     .clamp(0, max.toInt())
                     .toDouble();
+                final displayValue = (_dragPositionMilliseconds ?? value)
+                    .clamp(0, max)
+                    .toDouble();
+                final displayPosition = _dragPositionMilliseconds == null
+                    ? position
+                    : Duration(milliseconds: displayValue.round());
                 return Row(
                   children: [
                     Expanded(
@@ -1331,19 +1333,23 @@ class _AudioControlState extends State<AudioControl> {
                           overlayShape: SliderComponentShape.noOverlay,
                         ),
                         child: Slider(
-                          value: value,
+                          value: displayValue,
                           max: max,
                           onChanged: duration == Duration.zero
                               ? null
-                              : (next) => _player.seek(
-                                  Duration(milliseconds: next.round()),
-                                ),
+                              : _updateDragPosition,
+                          onChangeStart: duration == Duration.zero
+                              ? null
+                              : _beginDrag,
+                          onChangeEnd: duration == Duration.zero
+                              ? null
+                              : _finishDrag,
                         ),
                       ),
                     ),
                     const SizedBox(width: 6),
                     Text(
-                      '${_time(position)} / ${_time(duration)}',
+                      '${_time(displayPosition)} / ${_time(duration)}',
                       style: const TextStyle(fontSize: 13),
                     ),
                   ],
@@ -1402,6 +1408,43 @@ class _AudioControlState extends State<AudioControl> {
     final next = !_muted;
     await _player.setVolume(next ? 0 : 1);
     if (mounted) setState(() => _muted = next);
+  }
+
+  void _beginDrag(double value) {
+    _dragSession++;
+    setState(() => _dragPositionMilliseconds = value);
+  }
+
+  void _updateDragPosition(double value) {
+    setState(() => _dragPositionMilliseconds = value);
+  }
+
+  Future<void> _finishDrag(double value) async {
+    final session = _dragSession;
+    final duration = _player.duration;
+    if (duration == null || duration == Duration.zero) {
+      if (mounted && session == _dragSession) {
+        setState(() => _dragPositionMilliseconds = null);
+      }
+      return;
+    }
+    final targetMilliseconds = value.round().clamp(0, duration.inMilliseconds);
+    setState(() => _dragPositionMilliseconds = targetMilliseconds.toDouble());
+    try {
+      await _player.seek(Duration(milliseconds: targetMilliseconds));
+    } catch (error) {
+      if (mounted) {
+        AppToast.show(
+          context,
+          'Không tua được âm thanh: $error',
+          tone: AppToastTone.error,
+        );
+      }
+    } finally {
+      if (mounted && session == _dragSession) {
+        setState(() => _dragPositionMilliseconds = null);
+      }
+    }
   }
 
   Future<void> _handleAudioAction(String action) async {

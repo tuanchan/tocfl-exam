@@ -1,6 +1,5 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../core/app_theme.dart';
@@ -9,14 +8,9 @@ import '../services/gemini_service.dart';
 import '../services/settings_store.dart';
 
 class SettingsPage extends StatefulWidget {
-  const SettingsPage({
-    super.key,
-    required this.settings,
-    required this.reloadCatalog,
-  });
+  const SettingsPage({super.key, required this.settings});
 
   final SettingsStore settings;
-  final Future<void> Function() reloadCatalog;
 
   @override
   State<SettingsPage> createState() => _SettingsPageState();
@@ -24,7 +18,6 @@ class SettingsPage extends StatefulWidget {
 
 class _SettingsPageState extends State<SettingsPage> {
   late final TextEditingController _apiKey;
-  late final TextEditingController _localRoot;
   List<GeminiModelOption> _models = const [];
   late String _selectedModel;
   String? _modelError;
@@ -35,7 +28,6 @@ class _SettingsPageState extends State<SettingsPage> {
   void initState() {
     super.initState();
     _apiKey = TextEditingController(text: widget.settings.geminiApiKey);
-    _localRoot = TextEditingController(text: widget.settings.localDataRoot);
     _selectedModel = widget.settings.geminiModel;
     if (_apiKey.text.trim().isNotEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _loadModels());
@@ -45,7 +37,6 @@ class _SettingsPageState extends State<SettingsPage> {
   @override
   void dispose() {
     _apiKey.dispose();
-    _localRoot.dispose();
     super.dispose();
   }
 
@@ -62,13 +53,6 @@ class _SettingsPageState extends State<SettingsPage> {
       );
     }
     return values;
-  }
-
-  GeminiModelOption? get _selectedModelInfo {
-    for (final model in _selectableModels) {
-      if (model.id == _selectedModel) return model;
-    }
-    return null;
   }
 
   @override
@@ -122,7 +106,7 @@ class _SettingsPageState extends State<SettingsPage> {
                   if (_modelError != null) setState(() => _modelError = null);
                 },
                 decoration: InputDecoration(
-                  labelText: 'API key Gemini',
+                  labelText: 'API key',
                   suffixIcon: IconButton(
                     tooltip: _showApiKey ? 'Ẩn API key' : 'Hiện API key',
                     onPressed: () => setState(() => _showApiKey = !_showApiKey),
@@ -140,7 +124,7 @@ class _SettingsPageState extends State<SettingsPage> {
                 initialValue: _selectedModel,
                 isExpanded: true,
                 decoration: InputDecoration(
-                  labelText: 'Model hỗ trợ generateContent',
+                  labelText: 'Model',
                   prefixIcon: _loadingModels
                       ? const Padding(
                           padding: EdgeInsets.all(14),
@@ -149,14 +133,22 @@ class _SettingsPageState extends State<SettingsPage> {
                             child: CircularProgressIndicator(strokeWidth: 2),
                           ),
                         )
-                      : const Icon(Icons.auto_awesome_outlined),
+                      : Padding(
+                          padding: const EdgeInsets.all(13),
+                          child: SvgPicture.asset(
+                            'assets/icon/gemini-color.svg',
+                            width: 20,
+                            height: 20,
+                            semanticsLabel: 'Gemini',
+                          ),
+                        ),
                 ),
                 items: models
                     .map(
                       (model) => DropdownMenuItem(
                         value: model.id,
                         child: Text(
-                          '${model.label}  •  ${model.id}',
+                          model.label,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                         ),
@@ -171,16 +163,6 @@ class _SettingsPageState extends State<SettingsPage> {
                         }
                       },
               ),
-              if (_selectedModelInfo?.description.trim().isNotEmpty ==
-                  true) ...[
-                const SizedBox(height: 8),
-                Text(
-                  _selectedModelInfo!.description,
-                  maxLines: 3,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-              ],
               if (_modelError != null) ...[
                 const SizedBox(height: 8),
                 Text(
@@ -203,15 +185,13 @@ class _SettingsPageState extends State<SettingsPage> {
                     onPressed: _openGeminiKeyPage,
                   ),
                   AppTextButton(
-                    label: _loadingModels
-                        ? 'Đang tải model...'
-                        : 'Tải danh sách model',
+                    label: _loadingModels ? 'Đang tải...' : 'Tải model',
                     compact: true,
                     filled: true,
                     onPressed: _loadingModels ? null : _loadModels,
                   ),
                   AppTextButton(
-                    label: 'Lưu Gemini',
+                    label: 'Lưu',
                     compact: true,
                     filled: true,
                     danger: true,
@@ -219,82 +199,9 @@ class _SettingsPageState extends State<SettingsPage> {
                   ),
                 ],
               ),
-              const SizedBox(height: 8),
-              Text(
-                widget.settings.geminiApiKey.isEmpty
-                    ? 'Chưa có key đã lưu.'
-                    : 'Key và model sẽ tự khôi phục khi mở lại ứng dụng.',
-              ),
             ],
           ),
         ),
-        if (Platform.isWindows) ...[
-          const SizedBox(height: 12),
-          AppSection(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'Nguồn tài liệu',
-                  style: TextStyle(fontWeight: FontWeight.w900),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _localRoot,
-                  decoration: const InputDecoration(
-                    labelText: 'Thư mục lưu tài liệu trên Windows',
-                  ),
-                ),
-                const SizedBox(height: 10),
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: AppColors.blue.withValues(alpha: 0.07),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Row(
-                        children: [
-                          Icon(
-                            Icons.cloud_done_outlined,
-                            color: AppColors.blue,
-                            size: 20,
-                          ),
-                          SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              'Nguồn đề đã được cấu hình sẵn',
-                              style: TextStyle(fontWeight: FontWeight.w900),
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      SelectableText(
-                        widget.settings.remoteDataRoot,
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 8),
-                const Text(
-                  'Ứng dụng tự dùng nguồn Cloudflare R2 này; người dùng không cần nhập URL.',
-                ),
-                const SizedBox(height: 12),
-                AppTextButton(
-                  label: 'Lưu thư mục Windows',
-                  expand: true,
-                  filled: true,
-                  onPressed: _saveConnection,
-                ),
-              ],
-            ),
-          ),
-        ],
       ],
     );
   }
@@ -333,22 +240,6 @@ class _SettingsPageState extends State<SettingsPage> {
       }
     } finally {
       if (mounted) setState(() => _loadingModels = false);
-    }
-  }
-
-  Future<void> _saveConnection() async {
-    await widget.settings.saveConnectionSettings(
-      apiKey: _apiKey.text,
-      model: _selectedModel,
-      localRoot: _localRoot.text,
-    );
-    await widget.reloadCatalog();
-    if (mounted) {
-      AppToast.show(
-        context,
-        'Đã lưu thư mục Windows.',
-        tone: AppToastTone.success,
-      );
     }
   }
 

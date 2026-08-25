@@ -8,6 +8,8 @@ import '../services/vocabulary_store.dart';
 import '../widgets/highlightable_text.dart';
 import '../widgets/vocabulary_dialog.dart';
 
+enum _VocabularyFileAction { open, delete }
+
 class VocabularyPage extends StatefulWidget {
   const VocabularyPage({super.key, required this.settings});
 
@@ -18,13 +20,18 @@ class VocabularyPage extends StatefulWidget {
 }
 
 class _VocabularyPageState extends State<VocabularyPage> {
+  static const _filesPerPage = 5;
+  static const _wordsPerPage = 5;
+
   final VocabularyStore _store = VocabularyStore();
-  List<String> _files = const [];
+  final GlobalKey _wordPageStartKey = GlobalKey();
+  List<VocabularyFileInfo> _files = const [];
   List<String> _lines = const [];
   String? _selectedFile;
-  String? _filePath;
   String? _error;
   bool _loading = true;
+  int _filePage = 0;
+  int _wordPage = 0;
 
   @override
   void initState() {
@@ -32,7 +39,10 @@ class _VocabularyPageState extends State<VocabularyPage> {
     _load();
   }
 
-  Future<void> _load({String? preferredFile}) async {
+  Future<void> _load({
+    String? preferredFile,
+    bool showLastWordPage = false,
+  }) async {
     if (mounted) {
       setState(() {
         _loading = true;
@@ -40,23 +50,33 @@ class _VocabularyPageState extends State<VocabularyPage> {
       });
     }
     try {
-      final files = await _store.listFiles();
+      final files = await _store.listFileInfos();
       final recent =
           preferredFile ?? _selectedFile ?? await _store.lastFilename();
       final normalized = _store.normalizeFilename(recent);
       final selected = files.firstWhere(
-        (filename) => filename.toLowerCase() == normalized.toLowerCase(),
+        (file) => file.filename.toLowerCase() == normalized.toLowerCase(),
         orElse: () => files.first,
       );
-      final lines = await _store.readLines(selected);
-      final filePath = await _store.filePath(selected);
-      await _store.selectFile(selected);
+      final lines = await _store.readLines(selected.filename);
+      await _store.selectFile(selected.filename);
+      final selectedIndex = files.indexOf(selected);
+      final selectedFileChanged = selected.filename != _selectedFile;
+      final lastWordPage = lines.isEmpty
+          ? 0
+          : (lines.length - 1) ~/ _wordsPerPage;
+      final nextWordPage = showLastWordPage
+          ? lastWordPage
+          : selectedFileChanged
+          ? 0
+          : _wordPage.clamp(0, lastWordPage);
       if (!mounted) return;
       setState(() {
         _files = files;
-        _selectedFile = selected;
+        _selectedFile = selected.filename;
         _lines = lines;
-        _filePath = filePath;
+        _filePage = selectedIndex ~/ _filesPerPage;
+        _wordPage = nextWordPage;
       });
     } catch (error) {
       if (mounted) setState(() => _error = error.toString());
@@ -109,9 +129,7 @@ class _VocabularyPageState extends State<VocabularyPage> {
                           child: _wideFileList(),
                         ),
                         const SizedBox(width: 14),
-                        Expanded(
-                          child: ListView(children: _contentWidgets()),
-                        ),
+                        Expanded(child: ListView(children: _contentWidgets())),
                       ],
                     ),
                   );
@@ -132,13 +150,7 @@ class _VocabularyPageState extends State<VocabularyPage> {
         children: [
           _fileListTitle(),
           const SizedBox(height: 12),
-          Expanded(
-            child: ListView.separated(
-              itemCount: _files.length,
-              separatorBuilder: (_, _) => const SizedBox(height: 8),
-              itemBuilder: (_, index) => _fileButton(_files[index]),
-            ),
-          ),
+          Expanded(child: SingleChildScrollView(child: _fileTable())),
           const SizedBox(height: 12),
           AppTextButton(
             label: 'Tạo file TXT mới',
@@ -160,10 +172,7 @@ class _VocabularyPageState extends State<VocabularyPage> {
           children: [
             _fileListTitle(),
             const SizedBox(height: 12),
-            for (var index = 0; index < _files.length; index++) ...[
-              _fileButton(_files[index]),
-              if (index < _files.length - 1) const SizedBox(height: 8),
-            ],
+            _fileTable(),
             const SizedBox(height: 12),
             AppTextButton(
               label: 'Tạo file TXT mới',
@@ -186,56 +195,261 @@ class _VocabularyPageState extends State<VocabularyPage> {
           style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
         ),
         const SizedBox(height: 4),
-        Text('${_files.length} file • bấm tên file để mở'),
+        Text('${_files.length} file • chọn một dòng để mở'),
       ],
     );
   }
 
-  Widget _fileButton(String filename) {
-    return AppTextButton(
-      label: filename,
-      selected: filename == _selectedFile,
-      expand: true,
-      compact: true,
-      onPressed: () => _load(preferredFile: filename),
-    );
-  }
+  Widget _fileTable() {
+    final pageCount = (_files.length / _filesPerPage).ceil().clamp(1, 999999);
+    final currentPage = _filePage.clamp(0, pageCount - 1);
+    final start = currentPage * _filesPerPage;
+    final end = (start + _filesPerPage).clamp(0, _files.length);
+    final visibleFiles = _files.sublist(start, end);
+    final mutedColor = Theme.of(
+      context,
+    ).colorScheme.onSurface.withValues(alpha: 0.62);
 
-  List<Widget> _contentWidgets() {
-    return [
-      AppSection(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              _selectedFile ?? 'Chưa chọn file',
-              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w900),
-            ),
-            const SizedBox(height: 6),
-            Text('${_lines.length} từ • ${_filePath ?? ''}'),
-            const SizedBox(height: 14),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
+    return Container(
+      clipBehavior: Clip.antiAlias,
+      decoration: BoxDecoration(
+        border: Border.all(color: AppColors.blue.withValues(alpha: 0.38)),
+        borderRadius: BorderRadius.circular(7),
+      ),
+      child: Column(
+        children: [
+          Container(
+            color: AppColors.blue.withValues(alpha: 0.09),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+            child: const Row(
               children: [
-                AppTextButton(
-                  label: 'Thêm từ vào file này',
-                  filled: true,
-                  compact: true,
-                  onPressed: _addVocabulary,
+                Expanded(
+                  child: Text(
+                    'TÊN FILE / CẬP NHẬT',
+                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.w900),
+                  ),
                 ),
-                AppTextButton(
-                  label: 'Xóa file TXT',
-                  danger: true,
-                  compact: true,
-                  onPressed: _selectedFile == null ? null : _deleteCurrentFile,
+                SizedBox(
+                  width: 45,
+                  child: Text(
+                    'TỪ',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.w900),
+                  ),
+                ),
+                SizedBox(
+                  width: 62,
+                  child: Text(
+                    'CỠ FILE',
+                    textAlign: TextAlign.right,
+                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.w900),
+                  ),
+                ),
+                SizedBox(width: 34),
+              ],
+            ),
+          ),
+          for (var index = 0; index < visibleFiles.length; index++) ...[
+            _fileTableRow(visibleFiles[index], mutedColor),
+            if (index < visibleFiles.length - 1)
+              Divider(height: 1, color: AppColors.blue.withValues(alpha: 0.18)),
+          ],
+          Divider(height: 1, color: AppColors.blue.withValues(alpha: 0.28)),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(8, 4, 4, 4),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    '${start + 1}–$end/${_files.length} • 5 dòng/trang',
+                    style: TextStyle(fontSize: 12, color: mutedColor),
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Trang trước',
+                  visualDensity: VisualDensity.compact,
+                  onPressed: currentPage == 0
+                      ? null
+                      : () => setState(() => _filePage = currentPage - 1),
+                  icon: const Icon(Icons.chevron_left_rounded),
+                ),
+                Text(
+                  '${currentPage + 1}/$pageCount',
+                  style: const TextStyle(fontWeight: FontWeight.w800),
+                ),
+                IconButton(
+                  tooltip: 'Trang sau',
+                  visualDensity: VisualDensity.compact,
+                  onPressed: currentPage >= pageCount - 1
+                      ? null
+                      : () => setState(() => _filePage = currentPage + 1),
+                  icon: const Icon(Icons.chevron_right_rounded),
                 ),
               ],
             ),
-          ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _fileTableRow(VocabularyFileInfo file, Color mutedColor) {
+    final selected = file.filename == _selectedFile;
+    return Semantics(
+      button: true,
+      selected: selected,
+      label: 'Mở file ${file.filename}',
+      child: Material(
+        color: selected
+            ? AppColors.blue.withValues(alpha: 0.13)
+            : Colors.transparent,
+        child: InkWell(
+          onTap: () => _load(preferredFile: file.filename),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Icon(
+                            Icons.description_outlined,
+                            size: 17,
+                            color: selected ? AppColors.blue : mutedColor,
+                          ),
+                          const SizedBox(width: 5),
+                          Expanded(
+                            child: Text(
+                              file.filename,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: selected ? AppColors.blue : null,
+                                fontWeight: FontWeight.w900,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        file.exists
+                            ? _formatFileDate(file.modifiedAt!)
+                            : 'Chưa tạo trên thiết bị',
+                        style: TextStyle(fontSize: 11, color: mutedColor),
+                      ),
+                      if (selected)
+                        const Padding(
+                          padding: EdgeInsets.only(top: 3),
+                          child: Text(
+                            'ĐANG MỞ',
+                            style: TextStyle(
+                              color: AppColors.blue,
+                              fontSize: 10,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                SizedBox(
+                  width: 45,
+                  child: Text(
+                    '${file.wordCount}',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                ),
+                SizedBox(
+                  width: 62,
+                  child: Text(
+                    _formatFileSize(file.sizeInBytes),
+                    textAlign: TextAlign.right,
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                ),
+                SizedBox(
+                  width: 34,
+                  height: 34,
+                  child: PopupMenuButton<_VocabularyFileAction>(
+                    tooltip: 'Thao tác với ${file.filename}',
+                    padding: EdgeInsets.zero,
+                    iconSize: 20,
+                    onSelected: (action) {
+                      if (action == _VocabularyFileAction.open) {
+                        _load(preferredFile: file.filename);
+                      } else {
+                        _deleteFile(file);
+                      }
+                    },
+                    itemBuilder: (_) => [
+                      const PopupMenuItem(
+                        value: _VocabularyFileAction.open,
+                        child: ListTile(
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          leading: Icon(Icons.folder_open_outlined),
+                          title: Text('Mở file'),
+                        ),
+                      ),
+                      PopupMenuItem(
+                        value: _VocabularyFileAction.delete,
+                        enabled: file.exists,
+                        child: const ListTile(
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          leading: Icon(
+                            Icons.delete_outline_rounded,
+                            color: AppColors.red,
+                          ),
+                          title: Text(
+                            'Xóa file',
+                            style: TextStyle(color: AppColors.red),
+                          ),
+                        ),
+                      ),
+                    ],
+                    icon: Icon(
+                      Icons.more_vert_rounded,
+                      color: selected ? AppColors.blue : mutedColor,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
         ),
       ),
-      const SizedBox(height: 12),
+    );
+  }
+
+  String _formatFileSize(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    final kilobytes = bytes / 1024;
+    if (kilobytes < 1024) {
+      return '${kilobytes.toStringAsFixed(kilobytes < 10 ? 1 : 0)} KB';
+    }
+    return '${(kilobytes / 1024).toStringAsFixed(1)} MB';
+  }
+
+  String _formatFileDate(DateTime value) {
+    String two(int number) => number.toString().padLeft(2, '0');
+    return '${two(value.day)}/${two(value.month)}/${value.year} '
+        '${two(value.hour)}:${two(value.minute)}';
+  }
+
+  List<Widget> _contentWidgets() {
+    final pageCount = _lines.isEmpty
+        ? 1
+        : ((_lines.length - 1) ~/ _wordsPerPage) + 1;
+    final currentPage = _wordPage.clamp(0, pageCount - 1);
+    final start = currentPage * _wordsPerPage;
+    final end = (start + _wordsPerPage).clamp(0, _lines.length);
+    return [
       if (_lines.isEmpty)
         const AppSection(
           child: Text(
@@ -243,13 +457,87 @@ class _VocabularyPageState extends State<VocabularyPage> {
             textAlign: TextAlign.center,
           ),
         )
-      else
-        for (var index = 0; index < _lines.length; index++) ...[
+      else ...[
+        _wordPaginationBar(
+          currentPage: currentPage,
+          pageCount: pageCount,
+          start: start,
+          end: end,
+          top: true,
+        ),
+        const SizedBox(height: 10),
+        for (var index = start; index < end; index++) ...[
           _entryCard(index, _store.parseLine(_lines[index])),
-          if (index < _lines.length - 1) const SizedBox(height: 10),
+          if (index < end - 1) const SizedBox(height: 10),
         ],
+        const SizedBox(height: 10),
+        _wordPaginationBar(
+          currentPage: currentPage,
+          pageCount: pageCount,
+          start: start,
+          end: end,
+          top: false,
+        ),
+      ],
       const SizedBox(height: 16),
     ];
+  }
+
+  Widget _wordPaginationBar({
+    required int currentPage,
+    required int pageCount,
+    required int start,
+    required int end,
+    required bool top,
+  }) {
+    return AppSection(
+      key: top ? _wordPageStartKey : null,
+      padding: const EdgeInsets.fromLTRB(12, 6, 6, 6),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              '${start + 1}–$end/${_lines.length} từ • 5 từ/trang',
+              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+            ),
+          ),
+          IconButton(
+            tooltip: 'Trang từ vựng trước',
+            visualDensity: VisualDensity.compact,
+            onPressed: currentPage == 0
+                ? null
+                : () => _changeWordPage(currentPage - 1),
+            icon: const Icon(Icons.chevron_left_rounded),
+          ),
+          Text(
+            '${currentPage + 1}/$pageCount',
+            style: const TextStyle(fontWeight: FontWeight.w900),
+          ),
+          IconButton(
+            tooltip: 'Trang từ vựng sau',
+            visualDensity: VisualDensity.compact,
+            onPressed: currentPage >= pageCount - 1
+                ? null
+                : () => _changeWordPage(currentPage + 1),
+            icon: const Icon(Icons.chevron_right_rounded),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _changeWordPage(int page) {
+    setState(() => _wordPage = page);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final targetContext = _wordPageStartKey.currentContext;
+      if (targetContext == null) return;
+      Scrollable.ensureVisible(
+        targetContext,
+        alignment: 0.02,
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOutCubic,
+      );
+    });
   }
 
   Widget _entryCard(int index, VocabularyEntry entry) {
@@ -353,15 +641,15 @@ class _VocabularyPageState extends State<VocabularyPage> {
       initialFilename: _selectedFile,
     );
     if (!mounted || result == null) return;
-    await _load(preferredFile: result.filename);
+    await _load(
+      preferredFile: result.filename,
+      showLastWordPage: result.action == VocabularySaveAction.added,
+    );
     if (!mounted) return;
     _showSaveResult(result);
   }
 
-  Future<void> _editVocabulary(
-    int index,
-    VocabularyEntry entry,
-  ) async {
+  Future<void> _editVocabulary(int index, VocabularyEntry entry) async {
     final filename = _selectedFile;
     if (filename == null) return;
     final result = await showVocabularyDialog(
@@ -397,10 +685,7 @@ class _VocabularyPageState extends State<VocabularyPage> {
     );
   }
 
-  Future<void> _deleteVocabulary(
-    int index,
-    VocabularyEntry entry,
-  ) async {
+  Future<void> _deleteVocabulary(int index, VocabularyEntry entry) async {
     final filename = _selectedFile;
     if (filename == null) return;
     final confirmed = await showDialog<bool>(
@@ -492,15 +777,14 @@ class _VocabularyPageState extends State<VocabularyPage> {
     }
   }
 
-  Future<void> _deleteCurrentFile() async {
-    final filename = _selectedFile;
-    if (filename == null) return;
+  Future<void> _deleteFile(VocabularyFileInfo file) async {
+    final filename = file.filename;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: const Text('Xóa file TXT?'),
         content: Text(
-          'Xóa toàn bộ file $filename và ${_lines.length} từ bên trong? Hành động này không thể hoàn tác.',
+          'Xóa toàn bộ file $filename và ${file.wordCount} từ bên trong? Hành động này không thể hoàn tác.',
         ),
         actions: [
           TextButton(
@@ -517,7 +801,7 @@ class _VocabularyPageState extends State<VocabularyPage> {
     if (confirmed != true || !mounted) return;
     try {
       final deleted = await _store.deleteFile(filename);
-      _selectedFile = null;
+      if (filename == _selectedFile) _selectedFile = null;
       await _load();
       if (!mounted) return;
       AppToast.show(
