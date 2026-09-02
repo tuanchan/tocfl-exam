@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:just_audio/just_audio.dart';
@@ -39,11 +40,21 @@ class _ExamPageState extends State<ExamPage> {
   final Map<String, String> _selectedAnswers = {};
   final Set<String> _recorded = {};
   final Set<String> _revealedAnswers = {};
+  final Set<String> _reviewQuestionIds = {};
+  final Map<String, GlobalKey> _questionKeys = {};
+  final ValueNotifier<Duration> _elapsed = ValueNotifier(Duration.zero);
   late final Map<String, int> _displayQuestionNumbers;
+  Timer? _timer;
+  Map<String, String>? _savedAnswers;
+  Set<String>? _savedReviewQuestionIds;
+  Set<String>? _savedRevealedAnswers;
+  String? _focusedQuestionId;
   int _documentIndex = 0;
   bool _showTranscript = false;
   bool _analyzing = false;
   bool _gradingCurrentDocument = false;
+  bool _submitting = false;
+  bool _submitted = false;
   String? _pdfFile;
   String? _audioFile;
   String? _transcriptFile;
@@ -65,7 +76,23 @@ class _ExamPageState extends State<ExamPage> {
   void initState() {
     super.initState();
     _displayQuestionNumbers = _buildDisplayQuestionNumbers();
+    _startTimer();
     _loadDocumentAssets();
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    _elapsed.dispose();
+    super.dispose();
+  }
+
+  void _startTimer() {
+    _timer?.cancel();
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted || _submitted || _submitting) return;
+      _elapsed.value += const Duration(seconds: 1);
+    });
   }
 
   Map<String, int> _buildDisplayQuestionNumbers() {
@@ -93,6 +120,43 @@ class _ExamPageState extends State<ExamPage> {
       }
     }
     return numbers;
+  }
+
+  List<_ExamQuestionGroup> _questionGroups() {
+    final groupedDocumentIndexes = <String, List<int>>{};
+    for (
+      var documentIndex = 0;
+      documentIndex < widget.documents.length;
+      documentIndex++
+    ) {
+      final document = widget.documents[documentIndex];
+      final label = document.sectionName.trim().isEmpty
+          ? 'Phần ${document.sectionCode}'
+          : document.sectionName;
+      groupedDocumentIndexes
+          .putIfAbsent(label, () => <int>[])
+          .add(documentIndex);
+    }
+
+    return [
+      for (final group in groupedDocumentIndexes.entries)
+        _ExamQuestionGroup(
+          label: group.key,
+          questions: [
+            for (final documentIndex in group.value)
+              for (final childIndex in _questionIndexes(
+                widget.documents[documentIndex],
+              ))
+                _ExamQuestionTarget(
+                  documentIndex: documentIndex,
+                  id: '${widget.documents[documentIndex].id}#$childIndex',
+                  number:
+                      _displayQuestionNumbers['${widget.documents[documentIndex].id}#$childIndex'] ??
+                      childIndex + 1,
+                ),
+          ],
+        ),
+    ].where((group) => group.questions.isNotEmpty).toList(growable: false);
   }
 
   Future<void> _loadDocumentAssets() async {
@@ -230,7 +294,10 @@ class _ExamPageState extends State<ExamPage> {
     if (!mounted || selectedIndex == null || selectedIndex == _documentIndex) {
       return;
     }
-    setState(() => _documentIndex = selectedIndex);
+    setState(() {
+      _documentIndex = selectedIndex;
+      _focusedQuestionId = null;
+    });
     await _loadDocumentAssets();
   }
 
@@ -254,6 +321,14 @@ class _ExamPageState extends State<ExamPage> {
   Widget _practiceContent({required bool includePdf}) {
     final document = _document;
     final questionIndexes = _questionIndexes(document);
+    final questionGroups = _questionGroups();
+    final totalQuestionCount = questionGroups.fold<int>(
+      0,
+      (total, group) => total + group.questions.length,
+    );
+    final answeredQuestionCount = _selectedAnswers.keys
+        .where(_displayQuestionNumbers.containsKey)
+        .length;
     final hasPendingAnswer = questionIndexes.any((index) {
       final id = _questionId(index);
       return _selectedAnswers[id] != null && !_revealedAnswers.contains(id);
@@ -431,17 +506,31 @@ class _ExamPageState extends State<ExamPage> {
             const SizedBox(width: 8),
             Expanded(
               child: AppTextButton(
-                label: _documentIndex == widget.documents.length - 1
-                    ? 'Nộp bài'
-                    : 'Câu tiếp',
+                label: 'Câu tiếp',
                 filled: true,
                 danger: true,
                 onPressed: _documentIndex == widget.documents.length - 1
-                    ? _submit
+                    ? null
                     : _next,
               ),
             ),
           ],
+        ),
+        const SizedBox(height: 22),
+        _ExamSubmitPanel(
+          groups: questionGroups,
+          answered: answeredQuestionCount,
+          total: totalQuestionCount,
+          elapsed: _elapsed,
+          submitted: _submitted,
+          submitting: _submitting,
+          answeredQuestionIds: _selectedAnswers.keys.toSet(),
+          reviewedQuestionIds: _reviewQuestionIds,
+          focusedQuestionId: _focusedQuestionId,
+          savedProgressAvailable: _savedAnswers != null,
+          onSubmit: _submit,
+          onSaveOrRestore: _saveOrRestoreProgress,
+          onQuestionTap: _jumpToQuestion,
         ),
       ],
     );
@@ -604,7 +693,7 @@ class _ExamPageState extends State<ExamPage> {
         selected: selected == option,
         isCorrect: submitted && expected == option,
         isWrong: submitted && selected == option && expected != option,
-        onTap: submitted
+        onTap: submitted || _submitted
             ? null
             : () {
                 setState(() => _selectedAnswers[id] = option);
@@ -621,6 +710,7 @@ class _ExamPageState extends State<ExamPage> {
     );
 
     return Container(
+      key: _questionKeys.putIfAbsent(id, GlobalKey.new),
       margin: const EdgeInsets.only(bottom: 16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -633,6 +723,9 @@ class _ExamPageState extends State<ExamPage> {
                 answered: selected != null,
                 submitted: submitted,
                 correct: submitted && selected == expected,
+                reviewed: _reviewQuestionIds.contains(id),
+                focused: _focusedQuestionId == id,
+                onTap: () => _toggleReview(id),
               ),
               const SizedBox(width: 12),
               Expanded(child: options()),
@@ -735,12 +828,14 @@ class _ExamPageState extends State<ExamPage> {
 
   void _retryCurrentDocument() {
     setState(() {
+      _submitted = false;
       for (final index in _questionIndexes(_document)) {
         final id = _questionId(index);
         _selectedAnswers.remove(id);
         _revealedAnswers.remove(id);
       }
     });
+    _startTimer();
   }
 
   Future<void> _addSelectedVocabulary(String selectedText) async {
@@ -778,56 +873,161 @@ class _ExamPageState extends State<ExamPage> {
   }
 
   void _previous() {
-    setState(() => _documentIndex--);
+    setState(() {
+      _documentIndex--;
+      _focusedQuestionId = null;
+    });
     _loadDocumentAssets();
   }
 
   void _next() {
-    setState(() => _documentIndex++);
+    setState(() {
+      _documentIndex++;
+      _focusedQuestionId = null;
+    });
     _loadDocumentAssets();
   }
 
+  void _toggleReview(String questionId) {
+    setState(() {
+      if (!_reviewQuestionIds.add(questionId)) {
+        _reviewQuestionIds.remove(questionId);
+      }
+    });
+  }
+
+  void _saveOrRestoreProgress() {
+    if (_savedAnswers == null) {
+      setState(() {
+        _savedAnswers = Map<String, String>.from(_selectedAnswers);
+        _savedReviewQuestionIds = Set<String>.from(_reviewQuestionIds);
+        _savedRevealedAnswers = Set<String>.from(_revealedAnswers);
+      });
+      AppToast.show(
+        context,
+        'Đã lưu tạm bài làm hiện tại.',
+        tone: AppToastTone.success,
+      );
+      return;
+    }
+
+    setState(() {
+      _selectedAnswers
+        ..clear()
+        ..addAll(_savedAnswers!);
+      _reviewQuestionIds
+        ..clear()
+        ..addAll(_savedReviewQuestionIds ?? const <String>{});
+      _revealedAnswers
+        ..clear()
+        ..addAll(_savedRevealedAnswers ?? const <String>{});
+      _submitted = false;
+    });
+    _startTimer();
+    AppToast.show(
+      context,
+      'Đã khôi phục bài làm đã lưu.',
+      tone: AppToastTone.success,
+    );
+  }
+
+  Future<void> _jumpToQuestion(_ExamQuestionTarget target) async {
+    if (_focusedQuestionId == target.id &&
+        _documentIndex == target.documentIndex) {
+      _scrollToQuestionWhenReady(target.id);
+      return;
+    }
+
+    final changingDocument = _documentIndex != target.documentIndex;
+    setState(() {
+      _documentIndex = target.documentIndex;
+      _focusedQuestionId = target.id;
+    });
+    if (changingDocument) await _loadDocumentAssets();
+    if (!mounted || _focusedQuestionId != target.id) return;
+    _scrollToQuestionWhenReady(target.id);
+  }
+
+  void _scrollToQuestionWhenReady(String questionId, {int attempt = 0}) {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted || _focusedQuestionId != questionId) return;
+      final questionContext = _questionKeys[questionId]?.currentContext;
+      if (questionContext != null) {
+        await Scrollable.ensureVisible(
+          questionContext,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOutCubic,
+          alignment: 0,
+        );
+        return;
+      }
+      if (attempt < 8) {
+        await Future<void>.delayed(Duration(milliseconds: 60 + attempt * 60));
+        if (mounted && _focusedQuestionId == questionId) {
+          _scrollToQuestionWhenReady(questionId, attempt: attempt + 1);
+        }
+      }
+    });
+  }
+
   Future<void> _submit() async {
+    if (_submitted || _submitting) return;
+    _timer?.cancel();
+    setState(() => _submitting = true);
     var correct = 0;
     var wrong = 0;
-    for (final document in widget.documents) {
-      for (final index in _questionIndexes(document)) {
-        final id = '${document.id}#$index';
-        final selected = _selectedAnswers[id];
-        if (selected == null) continue;
-        final expected = index < document.answers.length
-            ? document.answers[index]
-            : '';
-        final isCorrect = expected.isNotEmpty && selected == expected;
-        if (!_recorded.contains(id)) {
-          await widget.progress.recordAnswer(
-            questionId: id,
-            levelCode: document.levelCode,
-            correct: isCorrect,
-          );
-          _recorded.add(id);
+    try {
+      for (final document in widget.documents) {
+        for (final index in _questionIndexes(document)) {
+          final id = '${document.id}#$index';
+          final selected = _selectedAnswers[id];
+          if (selected == null) continue;
+          final expected = index < document.answers.length
+              ? document.answers[index]
+              : '';
+          final isCorrect = expected.isNotEmpty && selected == expected;
+          if (!_recorded.contains(id)) {
+            await widget.progress.recordAnswer(
+              questionId: id,
+              levelCode: document.levelCode,
+              correct: isCorrect,
+            );
+            _recorded.add(id);
+          }
+          _revealedAnswers.add(id);
+          isCorrect ? correct++ : wrong++;
         }
-        _revealedAnswers.add(id);
-        isCorrect ? correct++ : wrong++;
       }
-    }
-    if (!mounted) return;
-    setState(() {});
-    await showDialog<void>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Kết quả'),
-        content: Text(
-          'Đúng: $correct\nSai: $wrong\nChưa trả lời: ${_unansweredCount()}',
-        ),
-        actions: [
-          AppTextButton(
-            label: 'Đóng',
-            onPressed: () => Navigator.of(context).pop(),
+      if (!mounted) return;
+      setState(() {
+        _submitted = true;
+        _submitting = false;
+      });
+      await showDialog<void>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Kết quả'),
+          content: Text(
+            'Đúng: $correct\nSai: $wrong\nChưa trả lời: ${_unansweredCount()}',
           ),
-        ],
-      ),
-    );
+          actions: [
+            AppTextButton(
+              label: 'Đóng',
+              onPressed: () => Navigator.of(context).pop(),
+            ),
+          ],
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _submitting = false);
+      _startTimer();
+      AppToast.show(
+        context,
+        'Không thể nộp bài: $error',
+        tone: AppToastTone.error,
+      );
+    }
   }
 
   int _unansweredCount() {
@@ -988,6 +1188,248 @@ class _DocumentListDialog extends StatelessWidget {
   }
 }
 
+class _ExamQuestionGroup {
+  const _ExamQuestionGroup({required this.label, required this.questions});
+
+  final String label;
+  final List<_ExamQuestionTarget> questions;
+}
+
+class _ExamQuestionTarget {
+  const _ExamQuestionTarget({
+    required this.documentIndex,
+    required this.id,
+    required this.number,
+  });
+
+  final int documentIndex;
+  final String id;
+  final int number;
+}
+
+class _ExamSubmitPanel extends StatelessWidget {
+  const _ExamSubmitPanel({
+    required this.groups,
+    required this.answered,
+    required this.total,
+    required this.elapsed,
+    required this.submitted,
+    required this.submitting,
+    required this.answeredQuestionIds,
+    required this.reviewedQuestionIds,
+    required this.focusedQuestionId,
+    required this.savedProgressAvailable,
+    required this.onSubmit,
+    required this.onSaveOrRestore,
+    required this.onQuestionTap,
+  });
+
+  final List<_ExamQuestionGroup> groups;
+  final int answered;
+  final int total;
+  final ValueListenable<Duration> elapsed;
+  final bool submitted;
+  final bool submitting;
+  final Set<String> answeredQuestionIds;
+  final Set<String> reviewedQuestionIds;
+  final String? focusedQuestionId;
+  final bool savedProgressAvailable;
+  final VoidCallback onSubmit;
+  final VoidCallback onSaveOrRestore;
+  final ValueChanged<_ExamQuestionTarget> onQuestionTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(16, 18, 16, 20),
+      decoration: BoxDecoration(
+        color: colors.surface,
+        border: Border.all(color: AppColors.blue.withValues(alpha: 0.28)),
+        borderRadius: BorderRadius.circular(5),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          ValueListenableBuilder<Duration>(
+            valueListenable: elapsed,
+            builder: (context, duration, _) => Text.rich(
+              TextSpan(
+                text: 'Thời gian làm bài: ',
+                children: [
+                  TextSpan(
+                    text: _formatTimer(duration),
+                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                ],
+              ),
+              style: const TextStyle(fontSize: 16),
+            ),
+          ),
+          const SizedBox(height: 18),
+          SizedBox(
+            width: double.infinity,
+            height: 39,
+            child: OutlinedButton(
+              style: OutlinedButton.styleFrom(
+                foregroundColor: AppColors.blue,
+                backgroundColor: colors.surface,
+                side: const BorderSide(color: AppColors.blue, width: 1.2),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(4),
+                ),
+              ),
+              onPressed: submitted || submitting ? null : onSubmit,
+              child: Text(
+                submitting
+                    ? 'ĐANG NỘP BÀI'
+                    : submitted
+                    ? 'ĐÃ NỘP BÀI'
+                    : 'NỘP BÀI',
+                style: const TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 18),
+          InkWell(
+            onTap: submitting ? null : onSaveOrRestore,
+            borderRadius: BorderRadius.circular(4),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: Text(
+                savedProgressAvailable
+                    ? 'Khôi phục bài làm đã lưu ❯'
+                    : 'Lưu bài làm hiện tại ❯',
+                style: TextStyle(
+                  color: const Color(
+                    0xFFFF4A55,
+                  ).withValues(alpha: submitting ? 0.4 : 1),
+                  fontSize: 15,
+                  fontStyle: FontStyle.italic,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          const Text(
+            'Chú ý: bạn có thể click vào số thứ tự câu hỏi trong bài để đánh dấu review',
+            style: TextStyle(
+              color: Color(0xFFFF9D22),
+              fontSize: 14,
+              height: 1.35,
+              fontStyle: FontStyle.italic,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Đã làm $answered/$total câu',
+            style: TextStyle(
+              color: colors.onSurfaceVariant,
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 22),
+          for (final group in groups) ...[
+            Text(
+              group.label,
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 6,
+              runSpacing: 7,
+              children: [
+                for (final question in group.questions)
+                  _ExamQuestionJumpButton(
+                    question: question,
+                    answered: answeredQuestionIds.contains(question.id),
+                    reviewed: reviewedQuestionIds.contains(question.id),
+                    focused: focusedQuestionId == question.id,
+                    onTap: () => onQuestionTap(question),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 16),
+          ],
+        ],
+      ),
+    );
+  }
+
+  String _formatTimer(Duration duration) {
+    final hours = duration.inHours;
+    final minutes = duration.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final seconds = duration.inSeconds.remainder(60).toString().padLeft(2, '0');
+    return hours > 0 ? '$hours:$minutes:$seconds' : '$minutes:$seconds';
+  }
+}
+
+class _ExamQuestionJumpButton extends StatelessWidget {
+  const _ExamQuestionJumpButton({
+    required this.question,
+    required this.answered,
+    required this.reviewed,
+    required this.focused,
+    required this.onTap,
+  });
+
+  final _ExamQuestionTarget question;
+  final bool answered;
+  final bool reviewed;
+  final bool focused;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final background = focused || answered
+        ? AppColors.blue
+        : reviewed
+        ? const Color(0xFFFF9D22)
+        : Theme.of(context).colorScheme.surface;
+    final borderColor = focused || answered
+        ? AppColors.blue
+        : reviewed
+        ? const Color(0xFFFF9D22)
+        : Theme.of(context).colorScheme.outline.withValues(alpha: 0.45);
+    final foreground = focused || answered || reviewed
+        ? AppColors.white
+        : Theme.of(context).colorScheme.onSurface;
+    return Tooltip(
+      message: 'Đi tới câu ${question.number}',
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(3),
+        child: Container(
+          width: 32,
+          height: 30,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: background,
+            border: Border.all(color: borderColor),
+            borderRadius: BorderRadius.circular(3),
+          ),
+          child: Text(
+            '${question.number}',
+            style: TextStyle(
+              color: foreground,
+              fontSize: 13,
+              fontWeight: focused || answered || reviewed
+                  ? FontWeight.w700
+                  : FontWeight.w400,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _ExamToolAction extends StatelessWidget {
   const _ExamToolAction({
     required this.label,
@@ -1046,40 +1488,63 @@ class _Study4QuestionBadge extends StatelessWidget {
     required this.answered,
     required this.submitted,
     required this.correct,
+    required this.reviewed,
+    required this.focused,
+    required this.onTap,
   });
 
   final int number;
   final bool answered;
   final bool submitted;
   final bool correct;
+  final bool reviewed;
+  final bool focused;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     final resultColor = correct ? const Color(0xFF168445) : AppColors.red;
-    final background = submitted
+    final background = reviewed
+        ? const Color(0xFFFF9D22)
+        : submitted
         ? resultColor.withValues(alpha: 0.13)
         : answered
         ? AppColors.blue
         : AppColors.blue.withValues(alpha: 0.14);
-    return Container(
-      width: 36,
-      height: 36,
-      alignment: Alignment.center,
-      decoration: BoxDecoration(
-        color: background,
-        shape: BoxShape.circle,
-        border: submitted ? Border.all(color: resultColor, width: 1.4) : null,
-      ),
-      child: Text(
-        '$number',
-        style: TextStyle(
-          color: submitted
-              ? resultColor
-              : answered
-              ? AppColors.white
-              : AppColors.blue,
-          fontSize: 15,
-          fontWeight: FontWeight.w800,
+    final foreground = reviewed
+        ? AppColors.white
+        : submitted
+        ? resultColor
+        : answered
+        ? AppColors.white
+        : AppColors.blue;
+    return Tooltip(
+      message: reviewed ? 'Bỏ đánh dấu review' : 'Đánh dấu review',
+      child: InkWell(
+        onTap: onTap,
+        customBorder: const CircleBorder(),
+        child: Container(
+          width: 36,
+          height: 36,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: background,
+            shape: BoxShape.circle,
+            border: focused || submitted
+                ? Border.all(
+                    color: submitted ? resultColor : AppColors.blue,
+                    width: focused ? 2 : 1.4,
+                  )
+                : null,
+          ),
+          child: Text(
+            '$number',
+            style: TextStyle(
+              color: foreground,
+              fontSize: 15,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
         ),
       ),
     );
