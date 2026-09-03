@@ -426,7 +426,7 @@ class _ExamPageState extends State<ExamPage> {
         ),
         const SizedBox(height: 10),
         ?pdf,
-        if (_showTranscript && _analysis?.transcript.isNotEmpty == true) ...[
+        if (_showTranscript && _analysis?.hasTranscriptContent == true) ...[
           Container(
             width: double.infinity,
             padding: const EdgeInsets.all(12),
@@ -438,15 +438,11 @@ class _ExamPageState extends State<ExamPage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text(
-                  'Bản dịch tiếng Việt của script',
+                  'Nguyên văn tiếng Trung, pinyin và bản dịch tiếng Việt',
                   style: TextStyle(fontWeight: FontWeight.w900),
                 ),
                 const SizedBox(height: 8),
-                HighlightableText(
-                  text: _analysis!.transcript,
-                  highlightKey: '${document.id}/transcript',
-                  onAddVocabulary: _addSelectedVocabulary,
-                ),
+                _transcriptAnalysisContent(document),
               ],
             ),
           ),
@@ -536,6 +532,92 @@ class _ExamPageState extends State<ExamPage> {
     );
   }
 
+  Widget _transcriptAnalysisContent(ExamDocument document) {
+    final lines =
+        _analysis?.transcriptLines ?? const <AnalyzedTranscriptLine>[];
+    if (lines.isEmpty) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Đây là bản phân tích cũ. Hãy chọn “Phân tích lại” để bổ sung '
+            'nguyên văn chữ Hoa và pinyin.',
+            style: TextStyle(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+              fontStyle: FontStyle.italic,
+            ),
+          ),
+          const SizedBox(height: 6),
+          HighlightableText(
+            text: _analysis!.transcript,
+            highlightKey: '${document.id}/transcript/legacy',
+            onAddVocabulary: _addSelectedVocabulary,
+          ),
+        ],
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (var index = 0; index < lines.length; index++) ...[
+          _transcriptLineDetails(document, index, lines[index]),
+          if (index < lines.length - 1)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              child: Divider(
+                height: 1,
+                color: AppColors.blue.withValues(alpha: 0.16),
+              ),
+            ),
+        ],
+      ],
+    );
+  }
+
+  Widget _transcriptLineDetails(
+    ExamDocument document,
+    int index,
+    AnalyzedTranscriptLine line,
+  ) {
+    final source = line.source.trim();
+    final pinyin = line.pinyin.trim();
+    final meaning = line.meaning.trim();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (source.isNotEmpty)
+          HighlightableText(
+            text: source,
+            highlightKey: '${document.id}/transcript/$index/source',
+            onAddVocabulary: _addSelectedVocabulary,
+            style: const TextStyle(fontWeight: FontWeight.w700, height: 1.35),
+          ),
+        if (pinyin.isNotEmpty) ...[
+          const SizedBox(height: 2),
+          HighlightableText(
+            text: pinyin,
+            highlightKey: '${document.id}/transcript/$index/pinyin',
+            onAddVocabulary: _addSelectedVocabulary,
+            style: TextStyle(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+              fontStyle: FontStyle.italic,
+              height: 1.35,
+            ),
+          ),
+        ],
+        if (meaning.isNotEmpty) ...[
+          const SizedBox(height: 2),
+          HighlightableText(
+            text: meaning,
+            highlightKey: '${document.id}/transcript/$index/meaning',
+            onAddVocabulary: _addSelectedVocabulary,
+            style: const TextStyle(height: 1.35),
+          ),
+        ],
+      ],
+    );
+  }
+
   Widget _scriptQuestionsPanel() {
     final questions = _analysis?.questions ?? const <AnalyzedQuestion>[];
     return Container(
@@ -549,7 +631,7 @@ class _ExamPageState extends State<ExamPage> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Text(
-            'Nguyên văn và nghĩa câu hỏi – đáp án',
+            'Nguyên văn, pinyin và nghĩa câu hỏi – đáp án',
             style: TextStyle(fontWeight: FontWeight.w900),
           ),
           const SizedBox(height: 10),
@@ -575,6 +657,7 @@ class _ExamPageState extends State<ExamPage> {
 
   Widget _scriptQuestionDetails(int questionIndex, AnalyzedQuestion question) {
     final questionText = question.question.trim();
+    final questionPinyin = question.questionPinyin.trim();
     final questionMeaning = question.questionMeaning.trim();
     final allowedLabels = _document.answerOptions.toSet();
     final visibleAnswers = question.answers
@@ -599,6 +682,20 @@ class _ExamPageState extends State<ExamPage> {
             style: const TextStyle(fontWeight: FontWeight.w700, height: 1.35),
           ),
         ],
+        if (questionPinyin.isNotEmpty) ...[
+          const SizedBox(height: 2),
+          HighlightableText(
+            text: questionPinyin,
+            highlightKey:
+                '${_document.id}/script-question/$questionIndex/pinyin',
+            onAddVocabulary: _addSelectedVocabulary,
+            style: TextStyle(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+              fontStyle: FontStyle.italic,
+              height: 1.35,
+            ),
+          ),
+        ],
         if (questionMeaning.isNotEmpty) ...[
           const SizedBox(height: 4),
           HighlightableText(
@@ -617,6 +714,7 @@ class _ExamPageState extends State<ExamPage> {
           const SizedBox(height: 8),
           for (final answer in visibleAnswers)
             if (answer.text.trim().isNotEmpty ||
+                answer.pinyin.trim().isNotEmpty ||
                 answer.meaning.trim().isNotEmpty)
               Padding(
                 padding: const EdgeInsets.only(bottom: 7, left: 8),
@@ -636,6 +734,22 @@ class _ExamPageState extends State<ExamPage> {
                         height: 1.35,
                       ),
                     ),
+                    if (answer.pinyin.trim().isNotEmpty) ...[
+                      const SizedBox(height: 2),
+                      HighlightableText(
+                        text: answer.pinyin.trim(),
+                        highlightKey:
+                            '${_document.id}/script-question/$questionIndex/'
+                            '${answer.label}/pinyin',
+                        onAddVocabulary: _addSelectedVocabulary,
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                          fontSize: 13,
+                          fontStyle: FontStyle.italic,
+                          height: 1.35,
+                        ),
+                      ),
+                    ],
                     if (answer.meaning.trim().isNotEmpty) ...[
                       const SizedBox(height: 2),
                       HighlightableText(
@@ -671,6 +785,7 @@ class _ExamPageState extends State<ExamPage> {
           ),
         ],
         if (questionText.isEmpty &&
+            questionPinyin.isEmpty &&
             questionMeaning.isEmpty &&
             visibleAnswers.isEmpty &&
             question.explanation.trim().isEmpty)

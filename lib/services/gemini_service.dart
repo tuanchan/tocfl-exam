@@ -170,12 +170,88 @@ class GeminiService {
       final analysis = GeminiAnalysis.fromJson(
         jsonDecode(_stripFence(text)) as Map<String, dynamic>,
       );
+      _validateChineseAndPinyin(
+        analysis,
+        requireTranscript: transcriptFile != null,
+      );
       await save(document.id, analysis);
       return analysis;
     } finally {
       client.close(force: true);
     }
   }
+
+  void _validateChineseAndPinyin(
+    GeminiAnalysis analysis, {
+    required bool requireTranscript,
+  }) {
+    if (requireTranscript && analysis.transcriptLines.isEmpty) {
+      throw const FormatException(
+        'Gemini chưa trả về nguyên văn, pinyin và nghĩa của script. '
+        'Hãy thử phân tích lại.',
+      );
+    }
+    if (!requireTranscript && analysis.transcriptLines.isNotEmpty) {
+      throw const FormatException(
+        'Gemini đã tự tạo script dù tài liệu không có nguồn script. '
+        'Hãy thử phân tích lại.',
+      );
+    }
+    for (var index = 0; index < analysis.transcriptLines.length; index++) {
+      final line = analysis.transcriptLines[index];
+      if (line.source.trim().isEmpty) {
+        throw FormatException(
+          'Gemini thiếu nguyên văn chữ Hoa ở lượt nói ${index + 1}. '
+          'Hãy thử phân tích lại.',
+        );
+      }
+      _requireChineseDetails(
+        line.source,
+        line.pinyin,
+        line.meaning,
+        'lượt nói ${index + 1}',
+      );
+    }
+    for (var index = 0; index < analysis.questions.length; index++) {
+      final question = analysis.questions[index];
+      _requireChineseDetails(
+        question.question,
+        question.questionPinyin,
+        question.questionMeaning,
+        'câu hỏi ${index + 1}',
+      );
+      for (final answer in question.answers) {
+        _requireChineseDetails(
+          answer.text,
+          answer.pinyin,
+          answer.meaning,
+          'đáp án ${answer.label} của câu ${index + 1}',
+        );
+      }
+    }
+  }
+
+  void _requireChineseDetails(
+    String source,
+    String pinyin,
+    String meaning,
+    String location,
+  ) {
+    if (!_containsHan(source)) return;
+    if (pinyin.trim().isEmpty || _containsHan(pinyin)) {
+      throw FormatException(
+        'Gemini thiếu pinyin hợp lệ cho $location. Hãy thử phân tích lại.',
+      );
+    }
+    if (meaning.trim().isEmpty) {
+      throw FormatException(
+        'Gemini thiếu nghĩa tiếng Việt cho $location. Hãy thử phân tích lại.',
+      );
+    }
+  }
+
+  bool _containsHan(String value) =>
+      RegExp(r'[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]').hasMatch(value);
 
   Future<Uint8List> _readSource(String source) async {
     final uri = Uri.tryParse(source);
@@ -196,9 +272,7 @@ class GeminiService {
         );
       }
       final bytes = BytesBuilder(copy: false);
-      await response
-          .forEach(bytes.add)
-          .timeout(const Duration(seconds: 90));
+      await response.forEach(bytes.add).timeout(const Duration(seconds: 90));
       return bytes.takeBytes();
     } finally {
       client.close(force: true);
@@ -209,20 +283,27 @@ class GeminiService {
       '''
 Bạn là giáo viên TOCFL. Phân tích đầy đủ tài liệu đính kèm sang tiếng Việt.
 Tài liệu chính là đề ${document.isListening ? 'nghe' : 'đọc'}.
-${hasTranscript ? 'Tài liệu thứ hai là script nghe. Hãy dịch nguyên văn TOÀN BỘ script sang tiếng Việt, giữ đúng thứ tự, ngữ cảnh và từng lượt người nói trên một dòng riêng.' : 'Không có script nghe, tuyệt đối không tự bịa transcript.'}
+${hasTranscript ? 'Tài liệu thứ hai là script nghe. Hãy chép nguyên văn TOÀN BỘ chữ Hoa trong script, thêm Hán ngữ pinyin và dịch tiếng Việt cho từng lượt nói; giữ đúng thứ tự, ngữ cảnh và người nói.' : 'Không có script nghe, tuyệt đối không tự bịa transcript.'}
 PDF này có ${document.questionCount} câu nhỏ, đáp án lần lượt: ${document.answers.join(', ')}.
-Không đưa lời khuyên, mẹo làm bài hoặc gợi ý học tập thay cho bản dịch script.
+Không đưa lời khuyên, mẹo làm bài hoặc gợi ý học tập thay cho nội dung nguồn.
 
 Trả về duy nhất JSON hợp lệ theo cấu trúc:
 {
   "summary": "tóm tắt rất ngắn nội dung chính bằng tiếng Việt, không có lời khuyên hoặc gợi ý",
-  "transcript": "bản dịch nguyên văn toàn bộ script sang tiếng Việt, giữ nguyên cấu trúc từng dòng và người nói; để rỗng nếu không có nguồn",
+  "transcriptLines": [
+    {
+      "source": "男：我想坐九點的火車。",
+      "pinyin": "Nán: Wǒ xiǎng zuò jiǔ diǎn de huǒchē.",
+      "meaning": "Nam: Tôi muốn đi chuyến tàu lúc 9 giờ."
+    }
+  ],
   "questions": [
     {
       "question": "nguyên văn đầy đủ của câu hỏi trong đề",
+      "questionPinyin": "pinyin đầy đủ của question, có dấu thanh",
       "questionMeaning": "dịch sát nghĩa toàn bộ câu hỏi sang tiếng Việt",
       "answers": [
-        ${document.answerOptions.map((label) => '{"label": "$label", "text": "nguyên văn đáp án $label", "meaning": "dịch sát nghĩa đáp án $label sang tiếng Việt"}').join(',\n        ')}
+        ${document.answerOptions.map((label) => '{"label": "$label", "text": "nguyên văn đáp án $label", "pinyin": "pinyin đầy đủ của đáp án $label, có dấu thanh", "meaning": "dịch sát nghĩa đáp án $label sang tiếng Việt"}').join(',\n        ')}
       ],
       "explanation": "giải thích bằng tiếng Việt vì sao đáp án đúng và các đáp án còn lại sai"
     }
@@ -234,8 +315,15 @@ Trả về duy nhất JSON hợp lệ theo cấu trúc:
 
 Số phần tử questions phải đúng ${document.questionCount}. Với mỗi câu, phải đọc
 đủ nguyên văn câu hỏi và TẤT CẢ lựa chọn hiện có rồi dịch nghĩa riêng từng phần;
-nếu phần nào thực sự chỉ có hình ảnh thì để text và meaning của phần đó là chuỗi rỗng,
+nếu phần nào thực sự chỉ có hình ảnh thì để text, pinyin và meaning của phần đó là chuỗi rỗng,
 không tự bịa nội dung.
+
+Quy tắc bắt buộc cho chữ Hoa và pinyin:
+- transcriptLines phải bao phủ TOÀN BỘ script, mỗi lượt người nói là đúng một phần tử; để [] nếu không có script.
+- source, question và text của đáp án phải chép đúng chữ Hoa trong tài liệu, giữ chữ phồn thể, không được thay bằng bản dịch.
+- Mỗi source, question hoặc text có chữ Hoa đều bắt buộc có pinyin tương ứng ngay trong trường pinyin/questionPinyin.
+- Pinyin dùng Hán ngữ pinyin với dấu thanh trên nguyên âm (ví dụ: Wǒ xiǎng...), không dùng số thanh, không chứa chữ Hán và không bỏ sót chữ.
+- meaning và questionMeaning chỉ chứa bản dịch tiếng Việt; explanation viết bằng tiếng Việt.
 
 Danh sách vocabulary phải bao phủ TOÀN BỘ script, câu hỏi và các lựa chọn trả lời:
 - Lấy tất cả từ và cụm từ tiếng Hoa có giá trị học tập, kể cả từ cơ bản.

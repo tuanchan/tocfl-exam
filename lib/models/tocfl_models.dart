@@ -88,45 +88,102 @@ class GeminiAnalysis {
   const GeminiAnalysis({
     required this.summary,
     required this.transcript,
+    this.transcriptLines = const [],
     required this.questions,
     required this.vocabulary,
   });
 
   final String summary;
+  // Kept for analyses created before transcriptLines was introduced.
   final String transcript;
+  final List<AnalyzedTranscriptLine> transcriptLines;
   final List<AnalyzedQuestion> questions;
   final List<VocabularyEntry> vocabulary;
 
-  factory GeminiAnalysis.fromJson(Map<String, dynamic> json) => GeminiAnalysis(
-    summary: json['summary']?.toString() ?? '',
-    transcript: json['transcript']?.toString() ?? '',
-    questions: (json['questions'] as List<dynamic>? ?? const [])
-        .map(
-          (value) => AnalyzedQuestion.fromJson(value as Map<String, dynamic>),
-        )
-        .toList(growable: false),
-    vocabulary: (json['vocabulary'] as List<dynamic>? ?? const [])
-        .map((value) => VocabularyEntry.fromJson(value as Map<String, dynamic>))
-        .toList(growable: false),
-  );
+  bool get hasTranscriptContent =>
+      transcriptLines.isNotEmpty || transcript.trim().isNotEmpty;
+
+  factory GeminiAnalysis.fromJson(Map<String, dynamic> json) {
+    final rawTranscript = json['transcript'];
+    final rawTranscriptLines = json['transcriptLines'];
+    final transcriptLines = <AnalyzedTranscriptLine>[];
+    final lineSource = rawTranscriptLines is List<dynamic>
+        ? rawTranscriptLines
+        : rawTranscript is List<dynamic>
+        ? rawTranscript
+        : const <dynamic>[];
+    for (final value in lineSource) {
+      if (value is Map<String, dynamic>) {
+        transcriptLines.add(AnalyzedTranscriptLine.fromJson(value));
+      }
+    }
+    return GeminiAnalysis(
+      summary: json['summary']?.toString() ?? '',
+      transcript: rawTranscript is String ? rawTranscript : '',
+      transcriptLines: transcriptLines,
+      questions: (json['questions'] as List<dynamic>? ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .map(AnalyzedQuestion.fromJson)
+          .toList(growable: false),
+      vocabulary: (json['vocabulary'] as List<dynamic>? ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .map(VocabularyEntry.fromJson)
+          .toList(growable: false),
+    );
+  }
 
   Map<String, dynamic> toJson() => {
     'summary': summary,
     'transcript': transcript,
+    'transcriptLines': transcriptLines.map((value) => value.toJson()).toList(),
     'questions': questions.map((value) => value.toJson()).toList(),
     'vocabulary': vocabulary.map((value) => value.toJson()).toList(),
+  };
+}
+
+class AnalyzedTranscriptLine {
+  const AnalyzedTranscriptLine({
+    required this.source,
+    required this.pinyin,
+    required this.meaning,
+  });
+
+  final String source;
+  final String pinyin;
+  final String meaning;
+
+  factory AnalyzedTranscriptLine.fromJson(Map<String, dynamic> json) =>
+      AnalyzedTranscriptLine(
+        source:
+            json['source']?.toString() ??
+            json['text']?.toString() ??
+            json['chinese']?.toString() ??
+            '',
+        pinyin: json['pinyin']?.toString() ?? '',
+        meaning:
+            json['meaning']?.toString() ??
+            json['translation']?.toString() ??
+            '',
+      );
+
+  Map<String, dynamic> toJson() => {
+    'source': source,
+    'pinyin': pinyin,
+    'meaning': meaning,
   };
 }
 
 class AnalyzedQuestion {
   const AnalyzedQuestion({
     required this.question,
+    this.questionPinyin = '',
     required this.questionMeaning,
     required this.answers,
     required this.explanation,
   });
 
   final String question;
+  final String questionPinyin;
   final String questionMeaning;
   final List<AnalyzedAnswer> answers;
   final String explanation;
@@ -150,6 +207,7 @@ class AnalyzedQuestion {
             AnalyzedAnswer(
               label: entry.key,
               text: value?.toString() ?? '',
+              pinyin: '',
               meaning: '',
             ),
           );
@@ -158,6 +216,10 @@ class AnalyzedQuestion {
     }
     return AnalyzedQuestion(
       question: json['question']?.toString() ?? '',
+      questionPinyin:
+          json['questionPinyin']?.toString() ??
+          json['pinyin']?.toString() ??
+          '',
       questionMeaning:
           json['questionMeaning']?.toString() ??
           json['questionTranslation']?.toString() ??
@@ -177,6 +239,7 @@ class AnalyzedQuestion {
 
   Map<String, dynamic> toJson() => {
     'question': question,
+    'questionPinyin': questionPinyin,
     'questionMeaning': questionMeaning,
     'answers': answers.map((value) => value.toJson()).toList(),
     'explanation': explanation,
@@ -187,11 +250,13 @@ class AnalyzedAnswer {
   const AnalyzedAnswer({
     required this.label,
     required this.text,
+    this.pinyin = '',
     required this.meaning,
   });
 
   final String label;
   final String text;
+  final String pinyin;
   final String meaning;
 
   factory AnalyzedAnswer.fromJson(Map<String, dynamic> json) => AnalyzedAnswer(
@@ -201,6 +266,7 @@ class AnalyzedAnswer {
         json['answer']?.toString() ??
         json['option']?.toString() ??
         '',
+    pinyin: json['pinyin']?.toString() ?? '',
     meaning:
         json['meaning']?.toString() ?? json['translation']?.toString() ?? '',
   );
@@ -208,6 +274,7 @@ class AnalyzedAnswer {
   Map<String, dynamic> toJson() => {
     'label': label,
     'text': text,
+    'pinyin': pinyin,
     'meaning': meaning,
   };
 }
@@ -236,7 +303,6 @@ class VocabularyEntry {
     'meaning': meaning,
   };
 
-  String get textLine => pinyin.trim().isEmpty
-      ? '$word:$meaning'
-      : '$word:$meaning ($pinyin)';
+  String get textLine =>
+      pinyin.trim().isEmpty ? '$word:$meaning' : '$word:$meaning ($pinyin)';
 }
